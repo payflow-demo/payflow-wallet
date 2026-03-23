@@ -20,11 +20,14 @@ const httpRequestTotal = new client.Counter({
   labelNames: ['method', 'route', 'status_code']
 });
 
-const transactionTotal = new client.Counter({
-  name: 'transactions_total',
-  help: 'Total number of transactions',
-  labelNames: ['status', 'type']
-});
+// Use getSingleMetric to avoid "already registered" when module is loaded multiple times in same process
+const transactionTotal =
+  register.getSingleMetric('transactions_total') ||
+  new client.Counter({
+    name: 'transactions_total',
+    help: 'Total number of transactions processed',
+    labelNames: ['status', 'type', 'service']
+  });
 
 const transactionDuration = new client.Histogram({
   name: 'transaction_duration_seconds',
@@ -206,10 +209,10 @@ const averageTransactionSize = new client.Gauge({
   labelNames: ['time_window']  // hour, day
 });
 
-// Register all metrics
+// Register all metrics (skip transactionTotal if already registered, e.g. double load of this module)
 register.registerMetric(httpRequestDuration);
 register.registerMetric(httpRequestTotal);
-register.registerMetric(transactionTotal);
+if (!register.getSingleMetric('transactions_total')) register.registerMetric(transactionTotal);
 register.registerMetric(transactionDuration);
 register.registerMetric(queueDepth);
 register.registerMetric(activeConnections);

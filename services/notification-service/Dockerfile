@@ -3,14 +3,14 @@
 # Target: <110MB (reduced from 221MB)
 # ============================================
 
-FROM node:18-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 
 COPY notification-service/package*.json ./
 RUN npm ci --only=production --ignore-scripts && \
     npm cache clean --force
 
-FROM node:18-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ RUN addgroup -g 1001 -S nodejs && \
 
 COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
 
-# Copy shared dependencies
+# Copy shared dependencies (at /shared so require('../shared/...') from /app resolves)
 COPY --chown=nodejs:nodejs shared ./shared
 
 # Copy application code

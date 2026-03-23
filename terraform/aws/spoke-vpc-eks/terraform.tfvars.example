@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and set real values. terraform.tfvars is gitignored.
+# For automation: use -var-file=terraform.tfvars or TF_VAR_db_password etc.
+
+# Required: no defaults (Terraform would prompt otherwise)
+db_password = "REPLACE_ME"
+mq_password = "REPLACE_ME"
+jwt_secret  = "REPLACE_ME"
+
+# Optional overrides (defaults exist in variables.tf)
+# db_username = "payflow"
+# mq_username = "payflow"

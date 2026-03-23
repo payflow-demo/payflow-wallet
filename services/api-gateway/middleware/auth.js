@@ -1,8 +1,21 @@
-const axios = require('axios');
+/* eslint-env node */
+/* global require, process, module, setTimeout */
+const jwt = require('jsonwebtoken');
+const redis = require('redis');
 
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://auth-service:3004';
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-in-production');
+const REDIS_URL = process.env.REDIS_URL || 'redis://redis:6379';
 
-// Authentication middleware
+let redisClient = null;
+function getRedisClient() {
+  if (!redisClient) {
+    redisClient = redis.createClient({ url: REDIS_URL });
+    redisClient.on('error', () => {});
+    redisClient.connect().catch(() => {});
+  }
+  return redisClient;
+}
+
 async function authenticate(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
 
@@ -10,44 +23,53 @@ async function authenticate(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  try {
-    const response = await axios.post(
-      `${AUTH_SERVICE_URL}/auth/verify`,
-      {},
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
+  if (!JWT_SECRET) {
+    return res.status(503).json({ error: 'JWT_SECRET not configured' });
+  }
 
-    if (response.data.valid) {
-      req.user = {
-        userId: response.data.userId,
-        email: response.data.email,
-        role: response.data.role
-      };
-      next();
-    } else {
-      res.status(401).json({ error: 'Invalid token' });
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const rclient = getRedisClient();
+    if (rclient?.isOpen) {
+      try {
+        const blacklisted = await Promise.race([
+          rclient.get(`blacklist:${token}`),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('redis_timeout')), 300))
+        ]);
+        if (blacklisted) {
+          return res.status(401).json({ error: 'Token revoked' });
+        }
+      } catch {
+        // Redis down: continue without blacklist check to avoid locking out all users
+      }
     }
+
+    req.user = {
+      userId: decoded.userId,
+      email: decoded.email,
+      role: decoded.role
+    };
+    next();
   } catch (error) {
-    res.status(401).json({ error: 'Authentication failed' });
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 }
 
-// Authorization middleware - check if user owns the resource
 function authorizeOwner(resourceIdParam = 'userId') {
   return (req, res, next) => {
     const resourceId = req.params[resourceIdParam] || req.body.fromUserId;
-    
+
     if (req.user.userId !== resourceId && req.user.role !== 'admin') {
-      return res.status(403).json({ 
-        error: 'Access denied - you can only access your own resources' 
+      return res.status(403).json({
+        error: 'Access denied - you can only access your own resources'
       });
     }
-    
+
     next();
   };
 }
 
-// Role-based authorization
 function authorizeRole(...roles) {
   return (req, res, next) => {
     if (!req.user) {
@@ -55,8 +77,8 @@ function authorizeRole(...roles) {
     }
 
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ 
-        error: `Access denied - requires one of: ${roles.join(', ')}` 
+      return res.status(403).json({
+        error: `Access denied - requires one of: ${roles.join(', ')}`
       });
     }
 

@@ -1,4 +1,54 @@
+# ──────────────────────────────────────────────
+# Terraform
+# ──────────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.backup
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.lock.hcl
 
+# Terraform variable files with real secrets
+terraform.tfvars
+!terraform.tfvars.example
+terraform/aws/spoke-vpc-eks/terraform.tfvars
+terraform/aws/managed-services/terraform.tfvars
+terraform/aws/finops/terraform.tfvars
+terraform/azure/finops/terraform.tfvars
+variables/finops.tfvars
+
+# ──────────────────────────────────────────────
+# Kubernetes secrets
+# ──────────────────────────────────────────────
+k8s/base/secrets/db-secrets.yaml
+k8s/secrets/db-secrets.yaml
+
+# TLS certificates (generated locally by generate-tls-cert.sh)
+k8s/ingress/certs/*.key
+k8s/ingress/certs/*.crt
+!k8s/ingress/certs/.gitkeep
+
+# Terraform generated plans
+**/apply.plan
+**/*.plan
+
+# Crash logs
+crash.log
+crash.*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
 
 #Ignore cursor AI rules
 .cursor/rules/codacy.mdc
@@ -55,11 +105,14 @@ k8s/secrets/cloudflare-tunnel-secret.yaml
 *.db
 *.sqlite
 
-# Documentation (optimization results, etc)
+# Documentation directories
 docs/
+book/
+cloud/
+tf-infra-docs/
 
-# Kubernetes
-k8s/
+# Shell scripts
+*.sh
 
 # Docker Hub push scripts and logs
 docker-push*.sh
@@ -76,8 +129,18 @@ logs/
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
+tfplan.bin
 .terraform.lock.hcl
 terraform.tfstate.backup
+**/backend.tf.backup
+*.tfvars
+terraform.tfvars
+!*.tfvars.example
 azure-credentials.json
 *credentials*.json
 backend-config.hcl
+# Terraform-managed secret temp files (contain credentials)
+terraform/aws/managed-services/.secret-*.json
+k8s/secrets/db-secrets.yaml
+k8s/base/secrets/db-secrets.yaml

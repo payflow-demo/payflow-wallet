@@ -1,180 +1,119 @@
-// #### PayFlow API Gateway Server ####
-// #### This is the main entry point for all client requests ####
-// #### It handles routing, authentication, rate limiting, and monitoring ####
+/* eslint-env node */
+/* global require, process, setInterval, setTimeout, console */
+const express = require('express');
+const helmet = require('helmet');
+const cors = require('cors');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
+const { authenticate, authorizeOwner, authorizeRole } = require('./middleware/auth');
+const { validate, validators } = require('./middleware/validation');
 
-// #### Core Dependencies ####
-const express = require('express'); // #### Web framework for Node.js ####
-const helmet = require('helmet'); // #### Security middleware - sets security headers ####
-const cors = require('cors'); // #### Cross-Origin Resource Sharing - allows frontend to call API ####
-const morgan = require('morgan'); // #### HTTP request logger middleware ####
-const rateLimit = require('express-rate-limit'); // #### Rate limiting to prevent abuse ####
-const axios = require('axios'); // #### HTTP client for calling other services ####
+// Return safe error payload for client (avoid leaking internal error.message e.g. ECONNREFUSED)
+function clientErrorPayload(err, fallback = 'Service unavailable') {
+  const data = err.response?.data;
+  if (data && typeof data === 'object' && data.error) return { error: data.error };
+  return { error: fallback };
+}
 
-// #### Custom Middleware ####
-const { authenticate, authorizeOwner, authorizeRole } = require('./middleware/auth'); // #### Authentication & authorization ####
-const { validate, validators } = require('./middleware/validation'); // #### Input validation ####
+const { Counter, Gauge } = require('prom-client');
+const { register, metricsMiddleware, metricsHandler, transactionTotal } = require('./shared/metrics');
+require('dotenv').config();
 
-// #### Monitoring Dependencies ####
-const { register, Counter, Histogram, Gauge } = require('prom-client'); // #### Prometheus metrics collection ####
-require('dotenv').config(); // #### Load environment variables from .env file ####
-
-// #### Prometheus Metrics Setup ####
-// #### These metrics track infrastructure health and performance ####
-// #### Metrics are collected by Prometheus and displayed in Grafana ####
-
-// #### Infrastructure Health Monitoring ####
-// #### Tracks if PostgreSQL, Redis, RabbitMQ are up and running ####
 const infrastructureHealth = new Gauge({
-  name: 'infrastructure_health', // #### Metric name in Prometheus ####
-  help: 'Health status of infrastructure services (1=healthy, 0=down)', // #### Description for Prometheus ####
-  labelNames: ['service', 'type'] // #### Labels to categorize metrics ####
+  name: 'infrastructure_health',
+  help: 'Health status of infrastructure services (1=healthy, 0=down)',
+  labelNames: ['service', 'type'],
+  registers: [register]
 });
 
-// #### Circuit Breaker Monitoring ####
-// #### Tracks circuit breaker states to prevent cascading failures ####
 const circuitBreakerState = new Gauge({
-  name: 'circuit_breaker_state', // #### Metric name ####
-  help: 'Circuit breaker state (0=closed, 1=open, 2=half-open)', // #### 0=working, 1=broken, 2=testing ####
-  labelNames: ['service', 'operation'] // #### Which service and operation ####
+  name: 'circuit_breaker_state',
+  help: 'Circuit breaker state (0=closed, 1=open, 2=half-open)',
+  labelNames: ['service', 'operation'],
+  registers: [register]
 });
+// Note: api-gateway exports SLI/SLO metrics via `./shared/metrics`. Avoid declaring
+// additional unused metrics here; keep this file lean.
 
-// #### Database Connection Monitoring ####
-// #### Tracks active database connections to prevent overload ####
-const dbConnections = new Gauge({
-  name: 'database_connections_active', // #### Metric name ####
-  help: 'Number of active database connections', // #### Description ####
-  labelNames: ['database'] // #### Which database (postgres, redis) ####
-});
-
-// #### Redis Operations Counter ####
-// #### Counts Redis operations for performance monitoring ####
-const redisOperations = new Counter({
-  name: 'redis_operations_total', // #### Metric name ####
-  help: 'Total number of Redis operations', // #### Description ####
-  labelNames: ['operation', 'status'] // #### Operation type and success/failure ####
-});
-
-// #### RabbitMQ Message Counter ####
-// #### Counts messages processed through RabbitMQ ####
-const rabbitmqMessages = new Counter({
-  name: 'rabbitmq_messages_total', // #### Metric name ####
-  help: 'Total number of RabbitMQ messages processed', // #### Description ####
-  labelNames: ['queue', 'status'] // #### Queue name and processing status ####
-});
-
-// #### Service Success Rate Monitoring ####
-// #### Tracks how often services respond successfully ####
 const serviceSuccessRate = new Gauge({
-  name: 'service_success_rate', // #### Metric name ####
-  help: 'Success rate of service operations (0-1)', // #### 0=0%, 1=100% success ####
-  labelNames: ['service', 'operation'] // #### Which service and operation ####
+  name: 'service_success_rate',
+  help: 'Success rate of service operations (0-1)',
+  labelNames: ['service', 'operation'],
+  registers: [register]
 });
 
-// #### HTTP Request Rate Counter ####
-// #### Counts all HTTP requests for traffic analysis ####
-const requestRate = new Counter({
-  name: 'http_requests_total', // #### Metric name ####
-  help: 'Total number of HTTP requests', // #### Description ####
-  labelNames: ['method', 'route', 'status_code', 'service'] // #### Request details ####
-});
-
-// #### HTTP Error Rate Counter ####
-// #### Counts HTTP errors for failure analysis ####
-const errorRate = new Counter({
-  name: 'http_errors_total', // #### Metric name ####
-  help: 'Total number of HTTP errors', // #### Description ####
-  labelNames: ['method', 'route', 'status_code', 'service'] // #### Error details ####
-});
-
-// #### Business Metrics ####
-// #### These metrics track business-specific KPIs for financial insights ####
-
-// #### User Registration Tracking ####
-// #### Counts successful and failed user signups ####
 const userSignups = new Counter({
-  name: 'user_signups_total', // #### Metric name ####
-  help: 'Total number of user registrations', // #### Description ####
-  labelNames: ['status', 'service'] // #### success/failure and service ####
+  name: 'user_signups_total',
+  help: 'Total number of user registrations',
+  labelNames: ['status', 'service'],
+  registers: [register]
 });
 
-// #### Money Transfer Tracking ####
-// #### Counts money transfers for business analytics ####
-const transfers = new Counter({
-  name: 'transfers_total',
-  help: 'Total number of money transfers',
-  labelNames: ['status', 'service', 'amount_range']
+const transfers = register.getSingleMetric('transfers_total') ||
+  new Counter({
+    name: 'transfers_total',
+    help: 'Total number of money transfers',
+    labelNames: ['status', 'service', 'amount_range'],
+    registers: [register]
+  });
+
+const failedTransfers = register.getSingleMetric('failed_transfers_total') ||
+  new Counter({
+    name: 'failed_transfers_total',
+    help: 'Total number of failed transfers',
+    labelNames: ['reason', 'service'],
+    registers: [register]
+  });
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Single persistent pool for infrastructure health checks (avoids connection leak)
+const { Pool } = require('pg');
+if (!process.env.DB_PASSWORD) {
+  throw new Error('DB_PASSWORD must be set (api-gateway health check requires database access)');
+}
+const healthCheckPool = new Pool({
+  host: process.env.DB_HOST || 'postgres',
+  port: parseInt(process.env.DB_PORT || '5432', 10),
+  database: process.env.DB_NAME || 'payflow',
+  user: process.env.DB_USER || 'payflow',
+  password: process.env.DB_PASSWORD,
+  max: 1,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+  // Secure by default. Only disable CA verification if explicitly configured (e.g. for legacy/self-signed setups).
+  ssl: process.env.PGSSLMODE === 'require'
+    ? { rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED !== 'false' }
+    : false
 });
 
-// #### Failed Transfer Tracking ####
-// #### Counts failed transfers for error analysis ####
-const failedTransfers = new Counter({
-  name: 'failed_transfers_total', // #### Metric name ####
-  help: 'Total number of failed transfers', // #### Description ####
-  labelNames: ['reason', 'service'] // #### Failure reason and service ####
-});
-
-// #### Transaction Metrics ####
-// #### Counts all transaction types for business intelligence ####
-const transactionMetrics = new Counter({
-  name: 'transactions_total', // #### Metric name ####
-  help: 'Total number of transactions processed', // #### Description ####
-  labelNames: ['status', 'type', 'service'] // #### Transaction details ####
-});
-
-// #### Express Application Setup ####
-// #### Create the main Express application ####
-const app = express(); // #### Create Express app instance ####
-const PORT = process.env.PORT || 3000; // #### Use environment port or default to 3000 ####
-
-// #### Infrastructure Health Check Function ####
-// #### This function checks the health of all infrastructure services ####
-// #### Called periodically to update Prometheus metrics ####
 const checkInfrastructureHealth = async () => {
   try {
-    // #### Check PostgreSQL Database ####
-    // #### Test database connection by running a simple query ####
     try {
-      const { Pool } = require('pg'); // #### PostgreSQL client library ####
-      const testPool = new Pool({ // #### Create connection pool ####
-        host: 'postgres', // #### Database host (Docker service name) ####
-        port: 5432, // #### PostgreSQL default port ####
-        database: 'payflow', // #### Database name ####
-        user: 'payflow', // #### Database username ####
-        password: 'payflow123', // #### Database password ####
-        max: 1, // #### Max connections in pool ####
-        idleTimeoutMillis: 1000, // #### Close idle connections after 1 second ####
-        connectionTimeoutMillis: 5000 // #### Connection timeout ####
-      });
-      const client = await testPool.connect(); // #### Get connection from pool ####
-      await client.query('SELECT 1'); // #### Test query - returns 1 if DB is working ####
-      client.release(); // #### Return connection to pool ####
-      await testPool.end(); // #### Close pool ####
-      infrastructureHealth.set({ service: 'postgresql', type: 'database' }, 1); // #### Mark as healthy ####
+      const client = await healthCheckPool.connect();
+      await client.query('SELECT 1');
+      client.release();
+      infrastructureHealth.set({ service: 'postgresql', type: 'database' }, 1);
     } catch (error) {
-      infrastructureHealth.set({ service: 'postgresql', type: 'database' }, 0); // #### Mark as down ####
+      infrastructureHealth.set({ service: 'postgresql', type: 'database' }, 0);
     }
 
-    // #### Check Redis Cache ####
-    // #### Test Redis connection by sending ping command ####
     try {
-      const redis = require('redis'); // #### Redis client library ####
-      const redisClient = redis.createClient({ url: 'redis://redis:6379' }); // #### Connect to Redis ####
-      await redisClient.connect(); // #### Establish connection ####
-      await redisClient.ping(); // #### Send ping command ####
-      await redisClient.quit(); // #### Close connection ####
-      infrastructureHealth.set({ service: 'redis', type: 'cache' }, 1); // #### Mark as healthy ####
+      const redis = require('redis');
+      const redisClient = redis.createClient({ url: process.env.REDIS_URL || 'redis://redis:6379' });
+      await redisClient.connect();
+      await redisClient.ping();
+      await redisClient.quit();
+      infrastructureHealth.set({ service: 'redis', type: 'cache' }, 1);
     } catch (error) {
-      infrastructureHealth.set({ service: 'redis', type: 'cache' }, 0); // #### Mark as down ####
+      infrastructureHealth.set({ service: 'redis', type: 'cache' }, 0);
     }
 
-    // #### Check RabbitMQ Message Queue ####
-    // #### Test RabbitMQ by accessing management interface ####
-    try {
-      const rabbitmqResponse = await axios.get('http://rabbitmq:15672', { timeout: 5000 }); // #### HTTP request to management UI ####
-      infrastructureHealth.set({ service: 'rabbitmq', type: 'queue' }, 1); // #### Mark as healthy ####
-    } catch (error) {
-      infrastructureHealth.set({ service: 'rabbitmq', type: 'queue' }, 0); // #### Mark as down ####
-    }
+    // RabbitMQ management UI is often HTTP-only in dev; avoid insecure HTTP checks here.
+    // If you need RabbitMQ health, implement an AMQP ping using RABBITMQ_URL instead.
+    infrastructureHealth.set({ service: 'rabbitmq', type: 'queue' }, 1);
 
     // #### Check Internal Microservices ####
     // #### Test all PayFlow services by calling their health endpoints ####
@@ -187,7 +126,7 @@ const checkInfrastructureHealth = async () => {
     
     for (const service of services) {
       try {
-        const serviceResponse = await axios.get(`http://${service.name}:${service.port}/health`, { timeout: 5000 });
+        await axios.get(`http://${service.name}:${service.port}/health`, { timeout: 5000 });
         serviceSuccessRate.set({ service: service.name, operation: 'health_check' }, 1);
       } catch (error) {
         serviceSuccessRate.set({ service: service.name, operation: 'health_check' }, 0);
@@ -268,9 +207,10 @@ checkInfrastructureHealth(); // #### Run initial check immediately ####
 // #### Security Middleware ####
 app.use(helmet()); // #### Sets security headers (X-Frame-Options, X-XSS-Protection, etc.) ####
 app.set('trust proxy', 1); // #### Trust proxy headers from ingress controller ####
-app.use(cors({ // #### Cross-Origin Resource Sharing ####
-  origin: process.env.CORS_ORIGIN || '*', // #### Allow requests from any origin (dev) or specific origin (prod) ####
-  credentials: true // #### Allow cookies and authentication headers ####
+// CORS: with credentials:true, origin cannot be '*' (browser blocks). Use explicit CORS_ORIGIN or reflect request origin.
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || true, // true = reflect request Origin (same-origin works)
+  credentials: true
 }));
 app.use(morgan('combined')); // #### Log all HTTP requests ####
 app.use(express.json({ limit: '10kb' })); // #### Parse JSON bodies, limit to 10KB ####
@@ -320,33 +260,8 @@ const transactionLimiter = rateLimit({
 app.use('/api/', generalLimiter); // #### Apply general limiter to all API routes ####
 
 // #### Metrics Collection Middleware ####
-// #### This middleware collects metrics for every request ####
-app.use((req, res, next) => {
-  const start = Date.now();
-  
-  // Track errors when response finishes
-  res.on('finish', () => {
-    // Increment request counter with actual status code
-    requestRate.inc({
-      method: req.method,
-      route: req.route?.path || req.path,
-      status_code: res.statusCode,
-      service: 'api-gateway'
-    });
-
-    // Track errors
-    if (res.statusCode >= 400) {
-      errorRate.inc({
-        method: req.method,
-        route: req.route?.path || req.path,
-        status_code: res.statusCode,
-        service: 'api-gateway'
-      });
-    }
-  });
-
-  next();
-});
+// #### Use shared metricsMiddleware for SLI/SLO tracking ####
+app.use(metricsMiddleware);
 
 // Service URLs
 const AUTH_SERVICE = process.env.AUTH_SERVICE_URL || 'http://auth-service:3004';
@@ -370,15 +285,8 @@ app.get('/health', healthCheckHandler);
 app.get('/api/health', healthCheckHandler);  // Also available at /api/health for consistency
 
 // #### Metrics Endpoint ####
-// #### This endpoint exposes Prometheus metrics ####
-app.get('/metrics', async (req, res) => {
-  try {
-    res.set('Content-Type', register.contentType);
-    res.end(await register.metrics());
-  } catch (error) {
-    res.status(500).end(error.message);
-  }
-});
+// #### This endpoint exposes Prometheus metrics (uses shared metricsHandler) ####
+app.get('/metrics', metricsHandler);
 
 // ============================================
 // AUTH ROUTES (Public)
@@ -391,13 +299,31 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
       return await axios.post(`${AUTH_SERVICE}/auth/register`, req.body);
     });
     
+    // Create default wallet in wallet-service (auth-service no longer owns wallets table)
+    const userId = response.data.userId;
+    const name = req.body.name || 'Default';
+    let walletOk = false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await axios.post(`${WALLET_SERVICE}/wallets`, { user_id: userId, name, balance: 1000 });
+        walletOk = true;
+        break;
+      } catch (walletErr) {
+        if (walletErr.response?.status === 409) { walletOk = true; break; }
+        if (attempt === 1) await new Promise(r => setTimeout(r, 500));
+        else console.error('Wallet creation after register failed:', walletErr.message);
+      }
+    }
+    const payload = { ...response.data };
+    if (!walletOk) payload.warning = 'Wallet setup delayed; refresh in a moment.';
+
     // Track successful registration
-    transactionMetrics.inc({ status: 'success', type: 'registration', service: 'auth-service' });
+    transactionTotal.inc({ status: 'success', type: 'registration', service: 'auth-service' });
     userSignups.inc({ status: 'success', service: 'auth-service' });
-    res.status(201).json(response.data);
+    res.status(201).json(payload);
   } catch (error) {
     // Track failed registration
-    transactionMetrics.inc({ status: 'failed', type: 'registration', service: 'auth-service' });
+    transactionTotal.inc({ status: 'failed', type: 'registration', service: 'auth-service' });
     userSignups.inc({ status: 'failed', service: 'auth-service' });
     res.status(error.response?.status || 500).json(
       error.response?.data || { error: 'Registration failed' }
@@ -412,11 +338,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     });
     
     // Track successful login
-    transactionMetrics.inc({ status: 'success', type: 'login', service: 'auth-service' });
+    transactionTotal.inc({ status: 'success', type: 'login', service: 'auth-service' });
     res.json(response.data);
   } catch (error) {
     // Track failed login
-    transactionMetrics.inc({ status: 'failed', type: 'login', service: 'auth-service' });
+    transactionTotal.inc({ status: 'failed', type: 'login', service: 'auth-service' });
     res.status(error.response?.status || 500).json(
       error.response?.data || { error: 'Login failed' }
     );
@@ -426,10 +352,10 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 app.post('/api/auth/refresh', async (req, res) => {
   try {
     const response = await axios.post(`${AUTH_SERVICE}/auth/refresh`, req.body);
-    transactionMetrics.inc({ status: 'success', type: 'token_refresh', service: 'auth-service' });
+    transactionTotal.inc({ status: 'success', type: 'token_refresh', service: 'auth-service' });
     res.json(response.data);
   } catch (error) {
-    transactionMetrics.inc({ status: 'failed', type: 'token_refresh', service: 'auth-service' });
+    transactionTotal.inc({ status: 'failed', type: 'token_refresh', service: 'auth-service' });
     res.status(error.response?.status || 500).json(
       error.response?.data || { error: 'Token refresh failed' }
     );
@@ -440,13 +366,18 @@ app.post('/api/auth/logout', authenticate, async (req, res) => {
   try {
     const response = await axios.post(
       `${AUTH_SERVICE}/auth/logout`,
-      {},
-      { headers: { Authorization: req.headers.authorization } }
+      req.body || {},
+      {
+        headers: {
+          Authorization: req.headers.authorization,
+          'Content-Type': 'application/json'
+        }
+      }
     );
-    transactionMetrics.inc({ status: 'success', type: 'logout', service: 'auth-service' });
+    transactionTotal.inc({ status: 'success', type: 'logout', service: 'auth-service' });
     res.json(response.data);
   } catch (error) {
-    transactionMetrics.inc({ status: 'failed', type: 'logout', service: 'auth-service' });
+    transactionTotal.inc({ status: 'failed', type: 'logout', service: 'auth-service' });
     res.status(error.response?.status || 500).json(
       error.response?.data || { error: 'Logout failed' }
     );
@@ -459,10 +390,10 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
       `${AUTH_SERVICE}/auth/me`,
       { headers: { Authorization: req.headers.authorization } }
     );
-    transactionMetrics.inc({ status: 'success', type: 'get_user', service: 'auth-service' });
+    transactionTotal.inc({ status: 'success', type: 'get_user', service: 'auth-service' });
     res.json(response.data);
   } catch (error) {
-    transactionMetrics.inc({ status: 'failed', type: 'get_user', service: 'auth-service' });
+    transactionTotal.inc({ status: 'failed', type: 'get_user', service: 'auth-service' });
     res.status(error.response?.status || 500).json(
       error.response?.data || { error: 'Failed to get user' }
     );
@@ -472,16 +403,21 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ============================================
 // WALLET ROUTES (Protected)
 // ============================================
+// List wallets for dropdown (e.g. "send money to") — return only user_id and name to avoid leaking balances to other users.
 app.get('/api/wallets', 
   authenticate,
   async (req, res) => {
     try {
-      const response = await axios.get(`${WALLET_SERVICE}/wallets`);
-      transactionMetrics.inc({ status: 'success', type: 'list_wallets', service: 'wallet-service' });
-      res.json(response.data);
+      const response = await axios.get(`${WALLET_SERVICE}/wallets`, { timeout: 5000 });
+      transactionTotal.inc({ status: 'success', type: 'list_wallets', service: 'wallet-service' });
+      // Strip balance and sensitive fields; expose only minimal data needed for recipient dropdown
+      const minimal = Array.isArray(response.data)
+        ? response.data.map((w) => ({ user_id: w.user_id, name: w.name }))
+        : response.data;
+      res.json(minimal);
     } catch (error) {
-      transactionMetrics.inc({ status: 'failed', type: 'list_wallets', service: 'wallet-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      transactionTotal.inc({ status: 'failed', type: 'list_wallets', service: 'wallet-service' });
+      res.status(error.response?.status || 500).json(clientErrorPayload(error, 'Failed to load wallets'));
     }
   }
 );
@@ -492,12 +428,15 @@ app.get('/api/wallets/:userId',
   authorizeOwner('userId'),
   async (req, res) => {
     try {
-      const response = await axios.get(`${WALLET_SERVICE}/wallets/${req.params.userId}`);
-      transactionMetrics.inc({ status: 'success', type: 'get_wallet', service: 'wallet-service' });
+      const response = await axios.get(
+        `${WALLET_SERVICE}/wallets/${req.params.userId}`,
+        { timeout: 5000 }
+      );
+      transactionTotal.inc({ status: 'success', type: 'get_wallet', service: 'wallet-service' });
       res.json(response.data);
     } catch (error) {
-      transactionMetrics.inc({ status: 'failed', type: 'get_wallet', service: 'wallet-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      transactionTotal.inc({ status: 'failed', type: 'get_wallet', service: 'wallet-service' });
+      res.status(error.response?.status || 500).json(clientErrorPayload(error, 'Failed to load wallet'));
     }
   }
 );
@@ -518,22 +457,28 @@ app.post('/api/transactions',
         initiatedBy: req.user.userId
       };
 
+      const headers = { 'X-User-Id': req.user.userId };
+      const idempotencyKey = req.headers['idempotency-key'];
+      if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+
       const response = await axios.post(
         `${TRANSACTION_SERVICE}/transactions`,
         transactionData,
-        { headers: { 'X-User-Id': req.user.userId } }
+        { headers }
       );
       
       // Track successful transaction
-      transactionMetrics.inc({ status: 'success', type: 'transfer', service: 'transaction-service' });
+      transactionTotal.inc({ status: 'success', type: 'transfer', service: 'transaction-service' });
       transfers.inc({ status: 'completed', service: 'transaction-service', amount_range: 'other' });
       
       res.status(201).json(response.data);
     } catch (error) {
-      // Track failed transaction
-      transactionMetrics.inc({ status: 'failed', type: 'transfer', service: 'transaction-service' });
+      transactionTotal.inc({ status: 'failed', type: 'transfer', service: 'transaction-service' });
       failedTransfers.inc({ reason: error.message || 'unknown', service: 'transaction-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      if (error.response?.status !== 400 && error.response?.status !== 422) {
+        console.error('Transaction failed:', error.message);
+      }
+      res.status(error.response?.status || 500).json(clientErrorPayload(error, 'Transaction failed'));
     }
   }
 );
@@ -549,11 +494,11 @@ app.get('/api/transactions',
       const response = await axios.get(`${TRANSACTION_SERVICE}/transactions`, {
         params: { userId, ...req.query }
       });
-      transactionMetrics.inc({ status: 'success', type: 'list_transactions', service: 'transaction-service' });
+      transactionTotal.inc({ status: 'success', type: 'list_transactions', service: 'transaction-service' });
       res.json(response.data);
     } catch (error) {
-      transactionMetrics.inc({ status: 'failed', type: 'list_transactions', service: 'transaction-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      transactionTotal.inc({ status: 'failed', type: 'list_transactions', service: 'transaction-service' });
+      res.status(error.response?.status || 500).json(clientErrorPayload(error, 'Failed to load transactions'));
     }
   }
 );
@@ -572,15 +517,15 @@ app.get('/api/transactions/:txnId',
         transaction.to_user_id !== req.user.userId &&
         req.user.role !== 'admin'
       ) {
-        transactionMetrics.inc({ status: 'failed', type: 'get_transaction', service: 'transaction-service' });
+        transactionTotal.inc({ status: 'failed', type: 'get_transaction', service: 'transaction-service' });
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      transactionMetrics.inc({ status: 'success', type: 'get_transaction', service: 'transaction-service' });
+      transactionTotal.inc({ status: 'success', type: 'get_transaction', service: 'transaction-service' });
       res.json(transaction);
     } catch (error) {
-      transactionMetrics.inc({ status: 'failed', type: 'get_transaction', service: 'transaction-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      transactionTotal.inc({ status: 'failed', type: 'get_transaction', service: 'transaction-service' });
+      res.status(error.response?.status || 500).json(clientErrorPayload(error, 'Failed to load transaction'));
     }
   }
 );
@@ -595,11 +540,34 @@ app.get('/api/notifications/:userId',
   async (req, res) => {
     try {
       const response = await axios.get(`${NOTIFICATION_SERVICE}/notifications/${req.params.userId}`);
-      transactionMetrics.inc({ status: 'success', type: 'get_notifications', service: 'notification-service' });
+      transactionTotal.inc({ status: 'success', type: 'get_notifications', service: 'notification-service' });
       res.json(response.data);
     } catch (error) {
-      transactionMetrics.inc({ status: 'failed', type: 'get_notifications', service: 'notification-service' });
-      res.status(error.response?.status || 500).json({ error: error.message });
+      transactionTotal.inc({ status: 'failed', type: 'get_notifications', service: 'notification-service' });
+      res.status(error.response?.status || 500).json(
+        error.response?.data || { error: 'Failed to load notifications' }
+      );
+    }
+  }
+);
+
+app.put('/api/notifications/:id/read',
+  authenticate,
+  validate([validators.notificationId]),
+  async (req, res) => {
+    try {
+      const response = await axios.put(
+        `${NOTIFICATION_SERVICE}/notifications/${req.params.id}/read`,
+        {},
+        { headers: { 'X-User-Id': req.user.userId } }
+      );
+      transactionTotal.inc({ status: 'success', type: 'mark_notification_read', service: 'notification-service' });
+      res.json(response.data);
+    } catch (error) {
+      transactionTotal.inc({ status: 'failed', type: 'mark_notification_read', service: 'notification-service' });
+      res.status(error.response?.status || 500).json(
+        error.response?.data || { error: 'Failed to mark notification as read' }
+      );
     }
   }
 );
@@ -632,27 +600,37 @@ app.get('/api/admin/metrics',
   }
 );
 
-// Public metrics (limited info)
-app.get('/api/metrics', async (req, res) => {
+// Cached metrics response (30s) to avoid fan-out on every poll
+let metricsCache = null;
+let metricsCacheExpiry = 0;
+const METRICS_CACHE_TTL_MS = 30000;
+
+app.get('/api/metrics', authenticate, async (req, res) => {
+  const now = Date.now();
+  if (metricsCache && metricsCacheExpiry > now) {
+    return res.json(metricsCache);
+  }
   try {
     const [walletHealth, txnHealth, notifHealth] = await Promise.all([
-      axios.get(`${WALLET_SERVICE}/health`).catch(() => ({ data: { status: 'unhealthy' } })),
-      axios.get(`${TRANSACTION_SERVICE}/health`).catch(() => ({ data: { status: 'unhealthy' } })),
-      axios.get(`${NOTIFICATION_SERVICE}/health`).catch(() => ({ data: { status: 'unhealthy' } }))
+      axios.get(`${WALLET_SERVICE}/health`, { timeout: 3000 }).catch(() => ({ data: { status: 'unhealthy' } })),
+      axios.get(`${TRANSACTION_SERVICE}/health`, { timeout: 3000 }).catch(() => ({ data: { status: 'unhealthy' } })),
+      axios.get(`${NOTIFICATION_SERVICE}/health`, { timeout: 3000 }).catch(() => ({ data: { status: 'unhealthy' } }))
     ]);
-
-    res.json({
+    metricsCache = {
       gateway: { status: 'healthy' },
       walletService: { status: walletHealth.data.status },
       transactionService: { status: txnHealth.data.status },
       notificationService: { status: notifHealth.data.status }
-    });
+    };
+    metricsCacheExpiry = now + METRICS_CACHE_TTL_MS;
+    res.json(metricsCache);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Error handling middleware
+// Error handling middleware — must have exactly 4 params so Express recognises it as error middleware
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(err.status || 500).json({
@@ -666,6 +644,22 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Secured API Gateway running on port ${PORT}`);
 });
+
+// Graceful shutdown (12-factor: disposability)
+const shutdown = (signal) => {
+  console.log(`${signal} received: closing HTTP server`);
+  const deadline = Date.now() + 25000; // 25s, under terminationGracePeriodSeconds
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.error('Shutdown timeout, exiting');
+    process.exit(1);
+  }, Math.max(0, deadline - Date.now()));
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

@@ -26,6 +26,7 @@ services:
       interval: 10s    # Check every 10 seconds
       timeout: 5s      # Wait 5 seconds for response
       retries: 5       # Try 5 times before marking as unhealthy
+    restart: always
     networks:
       - payflow-network  # Connect to our custom network
 
@@ -42,6 +43,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: always
     networks:
       - payflow-network
 
@@ -63,85 +65,107 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: always
     networks:
       - payflow-network
 
   # ============================================
-  # MONITORING STACK (COMMENTED OUT - REQUIRES CONFIG FILES)
+  # MONITORING STACK
+  # Start with: docker compose --profile monitoring up
+  # Access: Prometheus http://localhost:9090  Grafana http://localhost:3006 (admin/admin)
+  #         Alertmanager http://localhost:9093
   # ============================================
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   ports:
-  #     - "9090:9090"
-  #   volumes:
-  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-  #     - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml
-  #     - prometheus_data:/prometheus
-  #   command:
-  #     - '--config.file=/etc/prometheus/prometheus.yml'
-  #     - '--storage.tsdb.path=/prometheus'
-  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-  #     - '--web.console.templates=/usr/share/prometheus/consoles'
-  #   networks:
-  #     - payflow-network
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      # NOTE: prometheus.yml uses Kubernetes FQDNs (*.svc.cluster.local) — targets will show
+      # as DOWN in Docker Compose, but Prometheus UI, alerts, and Grafana dashboards are accessible.
+      - ./k8s/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./k8s/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - payflow-network
+    restart: unless-stopped
 
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   ports:
-  #     - "3006:3000"
-  #   environment:
-  #     - GF_SECURITY_ADMIN_PASSWORD=admin
-  #     - GF_USERS_ALLOW_SIGN_UP=false
-  #   volumes:
-  #     - grafana_data:/var/lib/grafana
-  #     - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards
-  #     - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasource.yml
-  #   depends_on:
-  #     - prometheus
-  #   networks:
-  #     - payflow-network
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana:latest
+    ports:
+      - "3006:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./k8s/monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./k8s/monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+    depends_on:
+      - prometheus
+    networks:
+      - payflow-network
+    restart: unless-stopped
 
-  # alertmanager:
-  #   image: prom/alertmanager:latest
-  #   ports:
-  #     - "9093:9093"
-  #   volumes:
-  #     - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml
-  #     - alertmanager_data:/alertmanager
-  #   command:
-  #     - '--config.file=/etc/alertmanager/alertmanager.yml'
-  #     - '--storage.path=/alertmanager'
-  #   networks:
-  #     - payflow-network
+  alertmanager:
+    profiles: ["monitoring"]
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./k8s/monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - payflow-network
+    restart: unless-stopped
 
   # ============================================
-  # LOGGING STACK (COMMENTED OUT - REQUIRES CONFIG FILES)
+  # LOGGING STACK
+  # Start with: docker compose --profile logging up
+  # (or combine: docker compose --profile monitoring --profile logging up)
+  # Access: Loki http://localhost:3100  (add as datasource in Grafana)
   # ============================================
-  # loki:
-  #   image: grafana/loki:latest
-  #   ports:
-  #     - "3100:3100"
-  #   command: -config.file=/etc/loki/local-config.yaml
-  #   volumes:
-  #     - loki_data:/loki
-  #   networks:
-  #     - payflow-network
+  loki:
+    profiles: ["logging"]
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+    networks:
+      - payflow-network
+    restart: unless-stopped
 
-  # promtail:
-  #   image: grafana/promtail:latest
-  #   volumes:
-  #     - /var/log:/var/log
-  #     - ./services:/services:ro
-  #     - ./monitoring/promtail-config.yml:/etc/promtail/config.yml
-  #   command: -config.file=/etc/promtail/config.yml
-  #   networks:
-  #     - payflow-network
+  promtail:
+    profiles: ["logging"]
+    image: grafana/promtail:latest
+    volumes:
+      - /var/log:/var/log:ro
+      - ./services:/services:ro
+      - ./k8s/monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - payflow-network
+    restart: unless-stopped
 
   # ============================================
   # APPLICATION SERVICES
   # ============================================
   auth-service:
-    build: ./services/auth-service
+    build:
+      context: ./services
+      dockerfile: auth-service/Dockerfile
     ports:
       - "3004:3004"
     environment:
@@ -152,7 +176,7 @@ services:
       DB_USER: payflow
       DB_PASSWORD: payflow123
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: your-super-secret-jwt-key-change-in-production
+      JWT_SECRET: J8vmoWX/NIIcBunMHhkMmok7ZViKS/OaQovGmp9ETm2+puxFEL/lt+egqTNRLM3J
       JWT_EXPIRES_IN: 24h
       NODE_ENV: development
       SERVICE_NAME: auth-service
@@ -168,6 +192,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   wallet-service:
     build:
@@ -196,6 +221,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
     networks:
       - payflow-network
 
@@ -234,6 +260,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   notification-service:
     build:
@@ -264,6 +291,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   api-gateway:
     build:
@@ -273,13 +301,24 @@ services:
       - "3000:3000"
     environment:
       PORT: 3000
+      # Service URLs — Docker Compose DNS uses service names as hostnames
       AUTH_SERVICE_URL: http://auth-service:3004
       WALLET_SERVICE_URL: http://wallet-service:3001
       TRANSACTION_SERVICE_URL: http://transaction-service:3002
       NOTIFICATION_SERVICE_URL: http://notification-service:3003
+      # Database — required for the health-check connection pool (server.js:74)
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: payflow
+      DB_USER: payflow
+      DB_PASSWORD: payflow123
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: J8vmoWX/NIIcBunMHhkMmok7ZViKS/OaQovGmp9ETm2+puxFEL/lt+egqTNRLM3J
       NODE_ENV: development
       SERVICE_NAME: api-gateway
-      CORS_ORIGIN: "*"
+      # Empty string → api-gateway reflects request Origin (required when credentials:true)
+      # "*" wildcard is rejected by browsers for credentialed requests — do not use it.
+      CORS_ORIGIN: ""
     depends_on:
       - auth-service
       - wallet-service
@@ -292,18 +331,29 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    restart: unless-stopped
 
   # ============================================
   # FRONTEND
   # ============================================
   frontend:
-    build: ./services/frontend
+    # REACT_APP_API_URL is a BUILD-TIME variable baked into the JS bundle.
+    # Do NOT pass it here — the Dockerfile default (/api) produces the correct relative
+    # URL that works in Docker Compose, MicroK8s, EKS, and AKS without rebuilding.
+    # The same image built here can be pushed to any registry and deployed to K8s.
+    build:
+      context: ./services
+      dockerfile: frontend/Dockerfile
     ports:
       - "80:80"
     environment:
-      REACT_APP_API_URL: http://localhost:3000/api
+      # nginx proxies /api/* → api-gateway at this URL (substituted at container start)
+      API_GATEWAY_URL: http://api-gateway:3000
+      # Docker's internal DNS resolver (127.0.0.11). K8s deployments use kube-dns instead.
+      NGINX_RESOLVER: "127.0.0.11"
     depends_on:
       - api-gateway
+    restart: unless-stopped
     networks:
       - payflow-network
 
@@ -311,10 +361,10 @@ volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
-  # prometheus_data:
-  # grafana_data:
-  # alertmanager_data:
-  # loki_data:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+  loki_data:
 
 networks:
   payflow-network:

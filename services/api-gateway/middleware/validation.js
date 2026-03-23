@@ -21,6 +21,7 @@ function validate(validations) {
 const validators = {
   userId: param('userId').isString().trim().notEmpty(),
   transactionId: param('txnId').isString().trim().notEmpty(),
+  notificationId: param('id').isInt().toInt(),
   
   createTransaction: [
     body('fromUserId').isString().trim().notEmpty(),

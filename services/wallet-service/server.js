@@ -6,59 +6,11 @@ const morgan = require('morgan');
 const { body, param, validationResult } = require('express-validator');
 const client = require('prom-client');
 const logger = require('./shared/logger');
+const { register: sharedRegister, metricsMiddleware, metricsHandler, transactionTotal, databaseQueryDuration, cacheHitRate, dbQueryErrors, dbConnectionErrors } = require('./shared/metrics');
 require('dotenv').config();
 
 // #### Prometheus Metrics Setup ####
-// #### These metrics track wallet operations and database performance ####
-
-// Database connection metrics
-const dbConnections = new client.Gauge({
-  name: 'database_connections_active',
-  help: 'Number of active database connections',
-  labelNames: ['database']
-});
-
-// Redis operation metrics
-const redisOperations = new client.Counter({
-  name: 'redis_operations_total',
-  help: 'Total number of Redis operations',
-  labelNames: ['operation', 'status']
-});
-
-// Transaction metrics
-const transactionMetrics = new client.Counter({
-  name: 'transactions_total',
-  help: 'Total number of transactions processed',
-  labelNames: ['status', 'type', 'service']
-});
-
-// #### Business Metrics for Wallet Service ####
-// #### These metrics track wallet-specific business operations ####
-const transfers = new client.Counter({
-  name: 'transfers_total',
-  help: 'Total number of money transfers',
-  labelNames: ['status', 'service', 'amount_range']
-});
-
-const failedTransfers = new client.Counter({
-  name: 'failed_transfers_total',
-  help: 'Total number of failed transfers',
-  labelNames: ['reason', 'service']
-});
-
-// Request rate metrics
-const requestRate = new client.Counter({
-  name: 'http_requests_total',
-  help: 'Total number of HTTP requests',
-  labelNames: ['method', 'route', 'status_code', 'service']
-});
-
-// Error rate metrics
-const errorRate = new client.Counter({
-  name: 'http_errors_total',
-  help: 'Total number of HTTP errors',
-  labelNames: ['method', 'route', 'status_code', 'service']
-});
+// #### Use shared register for SLI/SLO metrics ####
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -72,69 +24,45 @@ process.env.SERVICE_NAME = 'wallet-service';
 // ============================================
 // METRICS SETUP
 // ============================================
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+// Use shared register for SLI/SLO metrics (shared/metrics already calls collectDefaultMetrics)
+const register = sharedRegister;
 
-const httpRequestDuration = new client.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'Duration of HTTP requests in seconds',
-  labelNames: ['method', 'route', 'status_code'],
-  buckets: [0.1, 0.5, 1, 2, 5]
-});
+// Service-specific metrics (getSingleMetric avoids "already registered" if same register used elsewhere)
+const dbConnections = register.getSingleMetric('database_connections_active') ||
+  new client.Gauge({
+    name: 'database_connections_active',
+    help: 'Number of active database connections',
+    labelNames: ['database'],
+    registers: [register]
+  });
 
-const cacheHitRate = new client.Counter({
-  name: 'cache_hits_total',
-  help: 'Total cache hits',
-  labelNames: ['cache_type', 'hit']
-});
+const redisOperations = register.getSingleMetric('redis_operations_total') ||
+  new client.Counter({
+    name: 'redis_operations_total',
+    help: 'Total number of Redis operations',
+    labelNames: ['operation', 'status'],
+    registers: [register]
+  });
 
-const databaseQueryDuration = new client.Histogram({
-  name: 'database_query_duration_seconds',
-  help: 'Database query duration',
-  labelNames: ['query_type'],
-  buckets: [0.01, 0.05, 0.1, 0.5, 1, 2]
-});
+const transfers = register.getSingleMetric('transfers_total') ||
+  new client.Counter({
+    name: 'transfers_total',
+    help: 'Total number of money transfers',
+    labelNames: ['status', 'service', 'amount_range'],
+    registers: [register]
+  });
 
-register.registerMetric(httpRequestDuration);
-register.registerMetric(cacheHitRate);
-register.registerMetric(databaseQueryDuration);
-register.registerMetric(dbConnections);
-register.registerMetric(redisOperations);
-register.registerMetric(transactionMetrics);
-register.registerMetric(transfers);
-register.registerMetric(failedTransfers);
-register.registerMetric(requestRate);
-register.registerMetric(errorRate);
+const failedTransfers = register.getSingleMetric('failed_transfers_total') ||
+  new client.Counter({
+    name: 'failed_transfers_total',
+    help: 'Total number of failed transfers',
+    labelNames: ['reason', 'service'],
+    registers: [register]
+  });
 
 // ============================================
 // MIDDLEWARE
 // ============================================
-// #### Metrics Collection Middleware ####
-// #### This middleware collects metrics for every request ####
-app.use((req, res, next) => {
-  // Increment request counter
-  requestRate.inc({
-    method: req.method,
-    route: req.route?.path || req.path,
-    status_code: res.statusCode,
-    service: 'wallet-service'
-  });
-
-  // Track errors
-  res.on('finish', () => {
-    if (res.statusCode >= 400) {
-      errorRate.inc({
-        method: req.method,
-        route: req.route?.path || req.path,
-        status_code: res.statusCode,
-        service: 'wallet-service'
-      });
-    }
-  });
-
-  next();
-});
-
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10kb' }));
@@ -146,43 +74,46 @@ app.use((req, res, next) => {
   next();
 });
 
-// Metrics middleware
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    const route = req.route?.path || req.path;
-    httpRequestDuration.labels(req.method, route, res.statusCode).observe(duration);
-  });
-  next();
-});
+// #### Metrics Collection Middleware ####
+// #### Use shared metricsMiddleware for SLI/SLO tracking ####
+app.use(metricsMiddleware);
 
 // ============================================
 // DATABASE CONNECTION
 // ============================================
+// rejectUnauthorized: false for AWS RDS (RDS TLS cert not in Node default trust store)
+const DEFAULT_INSECURE_DB_PASSWORD = 'payflow123';
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.DB_PASSWORD || process.env.DB_PASSWORD === DEFAULT_INSECURE_DB_PASSWORD) {
+    throw new Error('DB_PASSWORD must be set to a non-default value in production (do not use the default placeholder)');
+  }
+}
 const pool = new Pool({
   host: process.env.DB_HOST || 'postgres',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'payflow',
   user: process.env.DB_USER || 'payflow',
-  password: process.env.DB_PASSWORD || 'payflow123',
-  max: 20,
+  password: process.env.DB_PASSWORD || DEFAULT_INSECURE_DB_PASSWORD,
+  max: parseInt(process.env.PG_POOL_MAX || '5', 10),
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 10000,  // 10s for RDS cold start / TLS handshake
+  ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 
-// Wrap pool.query to measure duration
+// Wrap pool.query to measure duration using shared metrics
 const originalQuery = pool.query.bind(pool);
 pool.query = async function(...args) {
   const start = Date.now();
+  const queryType = args[0]?.trim().substring(0, 6).toUpperCase() || 'UNKNOWN';
   try {
     const result = await originalQuery(...args);
     const duration = (Date.now() - start) / 1000;
-    databaseQueryDuration.labels('select').observe(duration);
+    databaseQueryDuration.labels(queryType).observe(duration);
     return result;
   } catch (error) {
     const duration = (Date.now() - start) / 1000;
     databaseQueryDuration.labels('error').observe(duration);
+    dbQueryErrors.labels(error.code || 'unknown', 'wallet-service').inc();
     throw error;
   }
 };
@@ -214,7 +145,7 @@ async function initDB() {
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS wallets (
-        user_id VARCHAR(50) PRIMARY KEY,
+        user_id VARCHAR(50) PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         name VARCHAR(100) NOT NULL,
         balance DECIMAL(15,2) NOT NULL DEFAULT 0.00,
         currency VARCHAR(3) DEFAULT 'USD',
@@ -259,34 +190,37 @@ const validate = (validations) => {
 // ROUTES
 // ============================================
 
-// Health check
+// Health check (return 200 if app can serve; avoid 503 on Redis timeout so k8s liveness doesn't kill pod)
 app.get('/health', async (req, res) => {
+  let redisOk = false;
   try {
     await pool.query('SELECT 1');
-    const redisPing = await redisClient.ping();
-    res.json({ 
-      status: 'healthy', 
-      service: 'wallet-service',
-      database: 'connected',
-      redis: redisPing === 'PONG' ? 'connected' : 'disconnected',
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    logger.error('Health check failed:', error);
-    res.status(503).json({ 
-      status: 'unhealthy', 
-      error: error.message 
-    });
+  } catch (e) {
+    logger.error('Health check failed:', e);
+    return res.status(503).json({ status: 'unhealthy', error: `database: ${e.message}` });
   }
+  try {
+    const redisPing = await Promise.race([
+      redisClient.ping(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
+    ]);
+    redisOk = redisPing === 'PONG';
+  } catch (e) {
+    redisOk = false;
+  }
+  res.json({
+    status: 'healthy',
+    service: 'wallet-service',
+    database: 'connected',
+    redis: redisOk ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Metrics endpoint
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', register.contentType);
-  res.end(await register.metrics());
-});
+// Metrics endpoint (uses shared metricsHandler)
+app.get('/metrics', metricsHandler);
 
-// Get all wallets
+// Get all wallets — must only be called from API gateway (internal); do not expose this service publicly.
 app.get('/wallets', async (req, res) => {
   const correlationId = req.correlationId;
   
@@ -353,8 +287,8 @@ app.get('/wallets/:userId',
         return res.status(404).json({ error: 'Wallet not found' });
       }
 
-      // Cache for 60 seconds
-      await redisClient.setEx(cacheKey, 60, JSON.stringify(result.rows[0]));
+      // Cache for 5 seconds (reduce stale balance after transfers)
+      await redisClient.setEx(cacheKey, 5, JSON.stringify(result.rows[0]));
 
       logger.info('Retrieved wallet', { 
         correlationId, 
@@ -469,24 +403,20 @@ app.post('/wallets/transfer',
         amount
       });
 
-      // STEP 2: Lock sender's wallet
-      // FOR UPDATE: Row-level lock prevents other transactions from modifying this wallet
-      // This prevents race conditions (two transfers at once)
-      // If another transaction tries to modify this wallet, it waits
-      const fromWallet = await client.query(
-        'SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE',
-        [fromUserId]
+      // STEP 2 & 3: Lock both wallets in lexicographic order to avoid deadlock (A→B and B→A)
+      const [firstId, secondId] = fromUserId < toUserId ? [fromUserId, toUserId] : [toUserId, fromUserId];
+      const first = await client.query(
+        'SELECT user_id, balance FROM wallets WHERE user_id = $1 FOR UPDATE',
+        [firstId]
       );
-
-      // STEP 3: Lock receiver's wallet
-      // Same lock mechanism for receiver
-      const toWallet = await client.query(
-        'SELECT balance FROM wallets WHERE user_id = $1 FOR UPDATE',
-        [toUserId]
+      const second = await client.query(
+        'SELECT user_id, balance FROM wallets WHERE user_id = $1 FOR UPDATE',
+        [secondId]
       );
+      const fromWallet = firstId === fromUserId ? first : second;
 
       // STEP 4: Validate wallets exist
-      if (fromWallet.rows.length === 0 || toWallet.rows.length === 0) {
+      if (first.rows.length === 0 || second.rows.length === 0) {
         await client.query('ROLLBACK');  // Cancel transaction
         logger.error('Wallet not found in transfer', {
           correlationId,
@@ -536,10 +466,12 @@ app.post('/wallets/transfer',
       // If this fails, both updates are rolled back (no partial transfer)
       await client.query('COMMIT');
 
-      // Invalidate cache
+      // Invalidate cache (including balance keys used by GET /wallets/:userId/balance)
       await Promise.all([
         redisClient.del(`wallet:${fromUserId}`),
         redisClient.del(`wallet:${toUserId}`),
+        redisClient.del(`wallet:${fromUserId}:balance`),
+        redisClient.del(`wallet:${toUserId}:balance`),
         redisClient.del('wallets:all')
       ]);
 
@@ -551,7 +483,7 @@ app.post('/wallets/transfer',
       });
 
       // Track successful transaction
-      transactionMetrics.inc({ status: 'success', type: 'transfer', service: 'wallet-service' });
+      transactionTotal.inc({ status: 'success', type: 'transfer', service: 'wallet-service' });
       
       // Track successful transfer
       const amountRange = amount < 100 ? 'small' : amount < 1000 ? 'medium' : 'large';
@@ -569,7 +501,7 @@ app.post('/wallets/transfer',
       await client.query('ROLLBACK');
       
       // Track failed transaction
-      transactionMetrics.inc({ status: 'failed', type: 'transfer', service: 'wallet-service' });
+      transactionTotal.inc({ status: 'failed', type: 'transfer', service: 'wallet-service' });
       
       // Track failed transfer
       failedTransfers.inc({ reason: 'system_error', service: 'wallet-service' });
@@ -663,15 +595,27 @@ const server = app.listen(PORT, () => {
   logger.info(`Wallet service running on port ${PORT}`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
+// Graceful shutdown (12-factor: disposability) with timeout under terminationGracePeriodSeconds
+const shutdown = (signal) => {
+  logger.info(`${signal} received: closing HTTP server`);
+  const deadline = Date.now() + 25000; // 25s
   server.close(async () => {
     logger.info('HTTP server closed');
-    await pool.end();
-    await redisClient.quit();
-    process.exit(0);
+    try {
+      await pool.end();
+      await redisClient.quit();
+      process.exit(0);
+    } catch (err) {
+      logger.error('Shutdown error', err);
+      process.exit(1);
+    }
   });
-});
+  setTimeout(() => {
+    logger.error('Shutdown timeout, exiting');
+    process.exit(1);
+  }, Math.max(0, deadline - Date.now()));
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app; // For testing

@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payflow
+
+# Base resources
+resources:
+  - ../../base
+  - secrets-db-secrets.yaml
+  # Local infrastructure (copies under overlay so Kustomize allows; sync from k8s/infrastructure/ if those change)
+  - infra/postgres.yaml
+  - infra/redis.yaml
+  - infra/rabbitmq.yaml
+  # Local only: Ingress for www.payflow.local / api.payflow.local (EKS uses ALB; not in this overlay)
+  - ingress-local.yaml
+
+# Local-specific patches (EKS overlay has its own patches; this file is never applied to EKS)
+# Note: patchesStrategicMerge/commonLabels are deprecated but safe here; switching to
+# patches/labels can change selector/template merge behavior and break apply on existing cluster.
+patchesStrategicMerge:
+  - local-config-patch.yaml
+  - local-env-patch.yaml   # NODE_ENV=development so default DB password allowed (local only)
+  - local-quota-patch.yaml # Higher quota for production-like replica counts (local only)
+  - local-probe-delays-patch.yaml  # Longer probe delays so api-gateway/auth become Ready (avoids 502)
+
+commonLabels:
+  environment: local
+  cloud-provider: local
+  cluster: minikube
+

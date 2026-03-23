@@ -1,5 +1,5 @@
 const nodemailer = require('nodemailer');
-const logger = require('../shared/logger');
+const logger = require('./shared/logger');
 
 class EmailService {
   constructor() {
@@ -149,7 +149,8 @@ class EmailService {
   }
 
   async sendPasswordResetEmail(to, resetToken) {
-    const resetLink = `https://payflow.com/reset-password?token=${resetToken}`;
+    const base = process.env.FRONTEND_BASE_URL || process.env.PASSWORD_RESET_BASE_URL || 'https://payflow.com';
+    const resetLink = `${base.replace(/\/$/, '')}/reset-password?token=${resetToken}`;
     const subject = 'Password Reset Request';
     const html = `
       <h2>Password Reset Request</h2>

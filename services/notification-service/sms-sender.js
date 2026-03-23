@@ -1,5 +1,5 @@
 const twilio = require('twilio');
-const logger = require('../shared/logger');
+const logger = require('./shared/logger');
 
 class SMSService {
   constructor() {

@@ -5,7 +5,7 @@
 
 # #### Stage 1: Dependencies ####
 # #### Install production dependencies only ####
-FROM node:18-alpine AS deps
+FROM node:22-alpine AS deps
 WORKDIR /app
 
 # #### Copy package files for better caching ####
@@ -15,7 +15,7 @@ COPY api-gateway/package*.json ./
 RUN npm ci --only=production --ignore-scripts
 
 # #### Stage 2: Final Production Image ####
-FROM node:18-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
@@ -26,7 +26,7 @@ RUN addgroup -g 1001 -S nodejs && \
 # #### Copy only production dependencies from deps stage ####
 COPY --from=deps --chown=nodejs:nodejs /app/node_modules ./node_modules
 
-# #### Copy shared dependencies ####
+# #### Copy shared dependencies under /app/shared (require('./shared/...') from /app resolves) ####
 COPY --chown=nodejs:nodejs shared ./shared
 
 # #### Copy application code ####

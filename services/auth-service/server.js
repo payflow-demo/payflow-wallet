@@ -7,6 +7,11 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { body, validationResult } = require('express-validator');
 const rateLimit = require('express-rate-limit');
+const { v4: uuidv4 } = require('uuid');
+const {
+  metricsMiddleware,
+  metricsHandler,
+} = require('./shared/metrics');
 require('dotenv').config();
 
 const app = express();
@@ -15,15 +20,25 @@ const PORT = process.env.PORT || 3004;
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(express.json());
+// Collect HTTP request metrics for SLI/SLO dashboards
+app.use(metricsMiddleware);
 
-// PostgreSQL connection
+// PostgreSQL connection (ssl required for AWS RDS; PGSSLMODE from app-config)
+// rejectUnauthorized: false so RDS TLS cert is accepted (RDS cert not in Node default trust store)
+const DEFAULT_INSECURE_DB_PASSWORD = 'payflow123';
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.DB_PASSWORD || process.env.DB_PASSWORD === DEFAULT_INSECURE_DB_PASSWORD) {
+    throw new Error('DB_PASSWORD must be set to a non-default value in production (do not use the default placeholder)');
+  }
+}
 const pool = new Pool({
   host: process.env.DB_HOST || 'postgres',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'payflow',
   user: process.env.DB_USER || 'payflow',
-  password: process.env.DB_PASSWORD || 'payflow123',
-  max: 20,
+  password: process.env.DB_PASSWORD || DEFAULT_INSECURE_DB_PASSWORD,
+  max: parseInt(process.env.PG_POOL_MAX || '5', 10),
+  ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 
 // Redis connection for token blacklist
@@ -32,19 +47,18 @@ const redisClient = redis.createClient({
 });
 
 redisClient.on('error', (err) => console.error('Redis error:', err));
-redisClient.connect();
+redisClient.connect().catch((err) => console.error('Redis connect error:', err.message));
 
-// JWT Configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// JWT Configuration — require secret in production so all replicas use the same key
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? (() => { throw new Error('JWT_SECRET must be set in production'); })() : 'dev-only-secret-change-in-production');
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 const REFRESH_TOKEN_EXPIRES_IN = '7d';
 
-// Rate limiting temporarily disabled for development
-// const authLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 100, // 100 attempts
-//   message: 'Too many authentication attempts, please try again later'
-// });
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'production' ? 20 : 100,
+  message: 'Too many authentication attempts, please try again later'
+});
 
 // Initialize database
 async function initDB() {
@@ -165,27 +179,37 @@ function generateTokens(userId, email, role) {
   return { accessToken, refreshToken };
 }
 
-// Health check
+// Health check (return 200 if app can serve; avoid 503 on Redis timeout so k8s liveness doesn't kill pod)
 app.get('/health', async (req, res) => {
+  let redisOk = false;
   try {
     await pool.query('SELECT 1');
-    const redisPing = await redisClient.ping();
-    res.json({ 
-      status: 'healthy', 
-      service: 'auth-service',
-      database: 'connected',
-      redis: redisPing === 'PONG' ? 'connected' : 'disconnected'
-    });
-  } catch (error) {
-    res.status(503).json({ 
-      status: 'unhealthy', 
-      error: error.message 
-    });
+  } catch (e) {
+    return res.status(503).json({ status: 'unhealthy', error: `database: ${e.message}` });
   }
+  try {
+    const redisPing = await Promise.race([
+      redisClient.ping(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
+    ]);
+    redisOk = redisPing === 'PONG';
+  } catch (e) {
+    redisOk = false;
+  }
+  res.json({
+    status: 'healthy',
+    service: 'auth-service',
+    database: 'connected',
+    redis: redisOk ? 'connected' : 'disconnected'
+  });
 });
+
+// Prometheus metrics endpoint (scraped by Prometheus)
+app.get('/metrics', metricsHandler);
 
 // Register new user
 app.post('/auth/register',
+  authLimiter,
   [
     body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email address'),
     body('password')
@@ -217,22 +241,13 @@ app.post('/auth/register',
 
       // Hash password
       const passwordHash = await bcrypt.hash(password, 12);
-      
-      // Generate user ID
-      const userId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      const userId = uuidv4();
 
-      // Create user
+      // Create user (wallet is created by wallet-service via api-gateway after register)
       await client.query(
         `INSERT INTO users (id, email, password_hash, name, role) 
          VALUES ($1, $2, $3, $4, 'user')`,
         [userId, email, passwordHash, name]
-      );
-
-      // Create wallet for user
-      await client.query(
-        `INSERT INTO wallets (user_id, name, balance) 
-         VALUES ($1, $2, 1000.00)`,
-        [userId, name]
       );
 
       await auditLog(userId, 'USER_REGISTERED', 'users', req, { email });
@@ -240,9 +255,18 @@ app.post('/auth/register',
       // Generate tokens
       const tokens = generateTokens(userId, email, 'user');
 
+      // Store refresh token so client can refresh access token after expiry (same as login)
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+      await client.query(
+        `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [userId, tokens.refreshToken, expiresAt, req.ip, req.get('user-agent')]
+      );
+
       res.status(201).json({
         message: 'User registered successfully',
         userId,
+        user: { id: userId, email, name, role: 'user' },
         ...tokens
       });
     } catch (error) {
@@ -256,6 +280,7 @@ app.post('/auth/register',
 
 // Login
 app.post('/auth/login',
+  authLimiter,
   [
     body('email').isEmail().normalizeEmail(),
     body('password').notEmpty()
@@ -416,7 +441,8 @@ app.post('/auth/refresh', async (req, res) => {
   }
 });
 
-// Logout
+// Logout — invalidate access token and revoke only the current session's refresh token.
+// Client should send refreshToken in body so we revoke only this device/session.
 app.post('/auth/logout', async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1];
 
@@ -427,17 +453,26 @@ app.post('/auth/logout', async (req, res) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Add token to blacklist (expires when token would expire)
+    // Add access token to blacklist (expires when token would expire)
     const expiresIn = decoded.exp - Math.floor(Date.now() / 1000);
     if (expiresIn > 0) {
       await redisClient.setEx(`blacklist:${token}`, expiresIn, 'true');
     }
 
-    // Delete refresh tokens
-    await pool.query(
-      'DELETE FROM refresh_tokens WHERE user_id = $1',
-      [decoded.userId]
-    );
+    // Revoke only the current session's refresh token when provided (avoids logging out all devices)
+    const refreshToken = req.body?.refreshToken;
+    if (refreshToken) {
+      await pool.query(
+        'DELETE FROM refresh_tokens WHERE token = $1',
+        [refreshToken]
+      );
+    } else {
+      // Backward compatibility: if client does not send refreshToken, revoke all sessions for this user
+      await pool.query(
+        'DELETE FROM refresh_tokens WHERE user_id = $1',
+        [decoded.userId]
+      );
+    }
 
     await auditLog(decoded.userId, 'LOGOUT', 'users', req);
 
@@ -550,7 +585,16 @@ app.post('/auth/change-password',
         [newPasswordHash, decoded.userId]
       );
 
-      await auditLog(decoded.userId, 'PASSWORD_CHANGED', 'users', req);
+      // Invalidate current access token so it cannot be used after password change
+      const remainingTTL = decoded.exp - Math.floor(Date.now() / 1000);
+      if (remainingTTL > 0) {
+        await redisClient.setEx(`blacklist:${token}`, remainingTTL, 'true');
+      }
+
+      // Revoke all refresh tokens for this user (log out all sessions)
+      await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [decoded.userId]);
+
+      await auditLog(decoded.userId, 'PASSWORD_CHANGED', 'users', req, { sessionsInvalidated: true });
 
       res.json({ message: 'Password changed successfully' });
     } catch (error) {
@@ -560,6 +604,22 @@ app.post('/auth/change-password',
   }
 );
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Auth service running on port ${PORT}`);
 });
+
+// Graceful shutdown (12-factor: disposability)
+const shutdown = (signal) => {
+  console.log(`${signal} received: closing HTTP server`);
+  const deadline = Date.now() + 25000; // 25s, under terminationGracePeriodSeconds
+  server.close(() => {
+    console.log('HTTP server closed');
+    pool.end().then(() => process.exit(0)).catch(() => process.exit(1));
+  });
+  setTimeout(() => {
+    console.error('Shutdown timeout, exiting');
+    process.exit(1);
+  }, Math.max(0, deadline - Date.now()));
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

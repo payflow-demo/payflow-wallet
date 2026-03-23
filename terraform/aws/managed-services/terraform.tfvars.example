@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars and set real values. terraform.tfvars is gitignored.
+# For automation: use -var-file=terraform.tfvars or TF_VAR_db_password etc.
+
+# Required: no defaults (Terraform would prompt otherwise)
+db_password       = "REPLACE_ME"
+rabbitmq_password = "REPLACE_ME"
+
+# Production: use larger RDS instance (default is db.t3.small, ~190 max_connections).
+# db_instance_class = "db.t3.medium"
+
+# Optional: extra security group IDs allowed to reach RDS and Redis (e.g. additional EKS node SGs).
+# Same list is used for both RDS (port 5432) and ElastiCache (port 6379).
+# additional_rds_security_group_ids = ["sg-xxx", "sg-yyy"]

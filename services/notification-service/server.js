@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const { param, validationResult } = require('express-validator');
 const client = require('prom-client');
 const logger = require('./shared/logger');
+const { register: sharedRegister, metricsMiddleware, metricsHandler, rabbitmqConsumeErrors } = require('./shared/metrics');
 require('dotenv').config();
 
 const app = express();
@@ -21,31 +22,23 @@ process.env.SERVICE_NAME = 'notification-service';
 // ============================================
 // METRICS SETUP
 // ============================================
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+// Use shared register for SLI/SLO metrics (shared/metrics already calls collectDefaultMetrics)
+const register = sharedRegister;
 
-const httpRequestDuration = new client.Histogram({
-  name: 'http_request_duration_seconds',
-  help: 'Duration of HTTP requests in seconds',
-  labelNames: ['method', 'route', 'status_code'],
-  buckets: [0.1, 0.5, 1, 2, 5]
-});
-
+// Service-specific metrics (register with shared registry)
 const notificationTotal = new client.Counter({
   name: 'notifications_total',
   help: 'Total number of notifications',
-  labelNames: ['type', 'channel', 'status']
+  labelNames: ['type', 'channel', 'status'],
+  registers: [register]
 });
 
 const emailSendDuration = new client.Histogram({
   name: 'email_send_duration_seconds',
   help: 'Email sending duration',
-  buckets: [0.5, 1, 2, 5, 10]
+  buckets: [0.5, 1, 2, 5, 10],
+  registers: [register]
 });
-
-register.registerMetric(httpRequestDuration);
-register.registerMetric(notificationTotal);
-register.registerMetric(emailSendDuration);
 
 // ============================================
 // MIDDLEWARE
@@ -61,27 +54,44 @@ app.use((req, res, next) => {
   next();
 });
 
-// Metrics middleware
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = (Date.now() - start) / 1000;
-    const route = req.route?.path || req.path;
-    httpRequestDuration.labels(req.method, route, res.statusCode).observe(duration);
-  });
+// Admin auth for test/admin routes (set ADMIN_API_KEY to require X-Admin-Key header)
+const requireAdminKey = (req, res, next) => {
+  const key = process.env.ADMIN_API_KEY;
+  if (!key) {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(501).json({ error: 'Admin API not configured' });
+    }
+    return next();
+  }
+  const provided = req.headers['x-admin-key'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  if (provided !== key) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   next();
-});
+};
+
+// #### Metrics Collection Middleware ####
+// #### Use shared metricsMiddleware for SLI/SLO tracking ####
+app.use(metricsMiddleware);
 
 // ============================================
 // DATABASE CONNECTION
 // ============================================
+// rejectUnauthorized: false for AWS RDS (RDS TLS cert not in Node default trust store)
+const DEFAULT_INSECURE_DB_PASSWORD = 'payflow123';
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.DB_PASSWORD || process.env.DB_PASSWORD === DEFAULT_INSECURE_DB_PASSWORD) {
+    throw new Error('DB_PASSWORD must be set to a non-default value in production (do not use the default placeholder)');
+  }
+}
 const pool = new Pool({
   host: process.env.DB_HOST || 'postgres',
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'payflow',
   user: process.env.DB_USER || 'payflow',
-  password: process.env.DB_PASSWORD || 'payflow123',
-  max: 20,
+  password: process.env.DB_PASSWORD || DEFAULT_INSECURE_DB_PASSWORD,
+  max: parseInt(process.env.PG_POOL_MAX || '5', 10),
+  ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
 
 // ============================================
@@ -340,8 +350,8 @@ async function initRabbitMQ() {
           channel.ack(msg);
         } catch (error) {
           logger.error('Notification processing failed:', error);
-          // Don't requeue - log and move on
-          channel.ack(msg);
+          rabbitmqConsumeErrors.labels('notifications', error.message, 'notification-service').inc();
+          channel.nack(msg, false, false); // Send to DLQ (no requeue)
         }
       }
     }, { noAck: false });
@@ -377,28 +387,37 @@ async function processNotification(notification) {
 
     notificationTotal.labels(notification.type, 'database', 'stored').inc();
 
-    // Get user email for sending notifications
-    const userResult = await pool.query(
-      'SELECT email, name FROM users WHERE id = $1',
-      [notification.userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      logger.warn('User not found for notification:', {
-        userId: notification.userId
-      });
-      return;
+    // Prefer email/name from payload (publisher should include; avoids cross-service DB coupling to users table)
+    let user = notification.email != null
+      ? { email: notification.email, name: notification.name || 'User' }
+      : null;
+    if (!user) {
+      const userResult = await pool.query(
+        'SELECT email, name FROM users WHERE id = $1',
+        [notification.userId]
+      );
+      if (userResult.rows.length === 0) {
+        logger.warn('User not found for notification:', { userId: notification.userId });
+        return;
+      }
+      user = userResult.rows[0];
     }
 
-    const user = userResult.rows[0];
+    // Resolve otherParty to display name when it is a user id (avoids showing raw userId in emails)
+    let otherPartyDisplay = notification.otherParty;
+    if (notification.otherParty && (notification.otherParty.startsWith('user-') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(notification.otherParty))) {
+      const nameRow = await pool.query('SELECT name FROM users WHERE id = $1', [notification.otherParty]);
+      if (nameRow.rows.length > 0) {
+        otherPartyDisplay = nameRow.rows[0].name;
+      }
+    }
 
-    // Send email notification (if user has email)
     if (user.email) {
       try {
         const transactionData = {
           type: notification.type,
           amount: notification.amount,
-          otherParty: notification.otherParty,
+          otherParty: otherPartyDisplay,
           transactionId: notification.transactionId,
           reason: notification.error
         };
@@ -438,7 +457,7 @@ async function initDB() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS notifications (
         id SERIAL PRIMARY KEY,
-        user_id VARCHAR(50) NOT NULL,
+        user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         type VARCHAR(50) NOT NULL,
         message TEXT NOT NULL,
         transaction_id VARCHAR(50),
@@ -503,11 +522,8 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Metrics endpoint
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', register.contentType);
-  res.end(await register.metrics());
-});
+// Metrics endpoint (uses shared metricsHandler)
+app.get('/metrics', metricsHandler);
 
 // Get notifications for a user
 app.get('/notifications/:userId',
@@ -545,19 +561,24 @@ app.get('/notifications/:userId',
   }
 );
 
-// Mark notification as read
+// Mark notification as read (requires X-User-Id so only owner can mark own notifications)
 app.put('/notifications/:id/read',
   validate([
     param('id').isInt().toInt()
   ]),
   async (req, res) => {
     const { id } = req.params;
+    const userId = req.headers['x-user-id'];
     const correlationId = req.correlationId;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'X-User-Id header required' });
+    }
 
     try {
       const result = await pool.query(
-        'UPDATE notifications SET read = TRUE WHERE id = $1 RETURNING *',
-        [id]
+        'UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2 RETURNING *',
+        [id, userId]
       );
 
       if (result.rows.length === 0) {
@@ -604,8 +625,8 @@ app.get('/notifications/:userId/stats', async (req, res) => {
   }
 });
 
-// Manual notification trigger (for testing)
-app.post('/notifications/test', async (req, res) => {
+// Manual notification trigger (for testing; requires ADMIN_API_KEY in production)
+app.post('/notifications/test', requireAdminKey, async (req, res) => {
   const { userId, type, message } = req.body;
 
   try {
@@ -659,15 +680,27 @@ const server = app.listen(PORT, () => {
   logger.info(`Notification service running on port ${PORT}`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
+// Graceful shutdown (12-factor: disposability) with timeout under terminationGracePeriodSeconds
+const shutdown = (signal) => {
+  logger.info(`${signal} received: closing HTTP server`);
+  const deadline = Date.now() + 25000; // 25s
   server.close(async () => {
     logger.info('HTTP server closed');
-    if (channel) await channel.close();
-    await pool.end();
-    process.exit(0);
+    try {
+      if (channel) await channel.close();
+      await pool.end();
+      process.exit(0);
+    } catch (err) {
+      logger.error('Shutdown error', err);
+      process.exit(1);
+    }
   });
-});
+  setTimeout(() => {
+    logger.error('Shutdown timeout, exiting');
+    process.exit(1);
+  }, Math.max(0, deadline - Date.now()));
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 module.exports = app; // For testing

@@ -23,8 +23,159 @@ kubectl config current-context
 # Verify Prometheus is running
 kubectl get pods -n monitoring
 
-# Verify MicroK8s addons
+# Verify MicroK8s addons (local only)
 microk8s status
+```
+
+---
+
+## 🚀 Deploy monitoring to EKS (with debugging)
+
+For **private EKS**, `kubectl` only works from inside the VPC. Run the monitoring deploy from the **bastion host** via SSM.
+
+### Step 1: Connect to the bastion
+
+From your laptop (with AWS CLI and Session Manager plugin):
+
+```bash
+# Set region (match your Terraform)
+export AWS_REGION=us-east-1
+
+# Get bastion instance ID (from Terraform state)
+cd /path/to/payflow-wallet-2
+BASTION_ID=$(terraform -chdir=terraform/aws/bastion output -raw bastion_instance_id 2>/dev/null || echo "")
+
+if [ -z "$BASTION_ID" ]; then
+  echo "Could not get bastion ID. Run from repo root after: cd terraform/aws/bastion && terraform output bastion_instance_id"
+  exit 1
+fi
+
+# Start SSM session (no SSH keys needed)
+aws ssm start-session --target "$BASTION_ID" --region "$AWS_REGION"
+```
+
+**Debugging:**
+
+- **"TargetNotConnected" / "TargetNotFound"**  
+  Bastion may be stopped or SSM agent not ready. Check instance in EC2 console; ensure IAM instance profile has `AmazonSSMManagedInstanceCore`.
+
+- **"SessionManagerPlugin not found"**  
+  Install: [Session Manager plugin for AWS CLI](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html).
+
+- **Region mismatch**  
+  Use the same region as your EKS cluster: `aws ssm start-session --target $BASTION_ID --region us-east-1`.
+
+### Step 2: On the bastion, get the repo and run the script
+
+Once you're in the SSM shell on the bastion:
+
+```bash
+# 1. Ensure kubectl and AWS CLI exist (bastion user-data usually installs them)
+which kubectl aws
+
+# 2. Configure kubectl for EKS (if not already done)
+# Replace CLUSTER_NAME and REGION with your values (from Terraform spoke output)
+aws eks update-kubeconfig --region us-east-1 --name payflow-eks-cluster
+
+# 3. Verify cluster access
+kubectl cluster-info
+kubectl get nodes
+kubectl get ns payflow
+
+# 4. Get the repo (clone or copy). Option A: clone (if bastion has git and network)
+git clone https://github.com/your-org/payflow-wallet-2.git
+cd payflow-wallet-2
+
+# Option B: copy from laptop (from a second terminal on your laptop)
+# From laptop: scp -r monitoring k8s/monitoring user@<bastion-ip>:~/payflow-wallet-2/
+# Or use rsync over SSM: see "Copy files to bastion" below
+
+# 5. Run the monitoring deploy script
+./monitoring/deploy-monitoring.sh
+```
+
+**Debugging:**
+
+- **"Cannot connect to Kubernetes cluster"**  
+  - Run `kubectl cluster-info`. If it fails, run `aws eks update-kubeconfig --region <region> --name <cluster-name>`.  
+  - Ensure bastion IAM role has EKS access (e.g. `eks:DescribeCluster`) and the cluster’s `aws-auth` (or EKS Access Entries) allows the bastion role.
+
+- **"kubectl not found"**  
+  Install kubectl on the bastion, or use the same version as your EKS control plane.
+
+- **"No matching storage class"**  
+  Script defaults to `gp3`. If your cluster uses another class (e.g. `gp2`), run:  
+  `STORAGE_CLASS=gp2 ./monitoring/deploy-monitoring.sh`
+
+- **Permission denied on script**  
+  `chmod +x monitoring/deploy-monitoring.sh`
+
+### Step 3: Copy files to bastion (if not using git)
+
+If the bastion can’t clone the repo, copy only what’s needed from your laptop:
+
+```bash
+# From your laptop (new terminal), with BASTION_ID and AWS_REGION set:
+# Create a tarball of monitoring + k8s/monitoring
+cd /path/to/payflow-wallet-2
+tar czf /tmp/payflow-monitoring.tar.gz monitoring k8s/monitoring
+
+# Copy via S3 (bastion has AWS CLI)
+aws s3 cp /tmp/payflow-monitoring.tar.gz s3://YOUR_BUCKET/payflow-monitoring.tar.gz --region "$AWS_REGION"
+
+# On bastion (inside SSM session):
+aws s3 cp s3://YOUR_BUCKET/payflow-monitoring.tar.gz /tmp/
+mkdir -p payflow-wallet-2 && cd payflow-wallet-2 && tar xzf /tmp/payflow-monitoring.tar.gz
+./monitoring/deploy-monitoring.sh
+```
+
+Alternatively use `rsync` over SSH if the bastion has an SSH server and you use SSH (not only SSM).
+
+### Step 4: Verify and debug the stack
+
+After the script finishes:
+
+```bash
+# Namespaces
+kubectl get ns monitoring payflow
+
+# Monitoring pods
+kubectl get pods -n monitoring
+kubectl get pods -n payflow -l 'app in (postgres-exporter,redis-exporter)'
+
+# Storage class in use (script prints this)
+kubectl get storageclass
+
+# If something is Missing or CrashLoopBackOff
+kubectl describe pod -n monitoring <pod-name>
+kubectl logs -n monitoring <pod-name> --tail=100
+```
+
+**Common issues:**
+
+- **Prometheus/Loki/Grafana pending (PVC)**  
+  Check `kubectl get pvc -n monitoring`. If `storageClassName` is wrong for your cluster, set `STORAGE_CLASS` and re-run the script (or fix PVCs and redeploy).
+
+- **postgres-exporter/redis-exporter not ready**  
+  They need `db-secrets` (or ESO) and correct DSN. Check `kubectl get secret -n payflow` and exporter logs.
+
+- **Script fails at “Waiting for … to be ready”**  
+  Inspect the resource: `kubectl describe pod -n <ns> -l app=<name>` and `kubectl logs ...`. Fix the underlying issue (e.g. image pull, secrets, probes) then re-run the script.
+
+### One-liner (from laptop) to run deploy on bastion
+
+You can’t run the script *on* the bastion from your laptop in one command without extra tooling. The intended flow is:
+
+1. **Terminal 1:** `aws ssm start-session --target $BASTION_ID --region $AWS_REGION`  
+2. **In that session:** `cd payflow-wallet-2 && ./monitoring/deploy-monitoring.sh`
+
+To only test connectivity from the laptop (e.g. with a public EKS endpoint):
+
+```bash
+aws eks update-kubeconfig --region us-east-1 --name payflow-eks-cluster
+kubectl cluster-info
+# If that works, you can run from laptop:
+./monitoring/deploy-monitoring.sh
 ```
 
 ---

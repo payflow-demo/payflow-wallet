@@ -19,12 +19,8 @@ const options = {
     },
     servers: [
       {
-        url: 'http://localhost:3000',
-        description: 'Development server'
-      },
-      {
-        url: 'https://api.payflow.com',
-        description: 'Production server'
+        url: process.env.API_GATEWAY_URL || 'http://localhost:3000',
+        description: 'API server'
       }
     ],
     components: {

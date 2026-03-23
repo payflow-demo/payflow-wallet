@@ -53,20 +53,35 @@ class APIClient {
     localStorage.removeItem('user');
   }
 
-  static async request(endpoint, options = {}) {
+  static async request(endpoint, options = {}, isRetryAfterRefresh = false) {
     const token = this.getToken();
-    
-    try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const isAuthEndpoint = endpoint === '/auth/login' || endpoint === '/auth/register' || endpoint === '/auth/refresh';
+
+    const doFetch = () =>
+      fetch(`${API_BASE_URL}${endpoint}`, {
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(token && { 'Authorization': `Bearer ${token}` }),
+          ...(token && { Authorization: `Bearer ${token}` }),
           ...options.headers,
         },
         ...options,
       });
 
+    try {
+      let response = await doFetch();
+
       if (response.status === 401) {
+        if (isAuthEndpoint) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || 'Invalid credentials');
+        }
+        if (!isRetryAfterRefresh) {
+          const refreshed = await this.tryRefreshToken();
+          if (refreshed) {
+            return this.request(endpoint, options, true);
+          }
+        }
         this.removeToken();
         window.location.href = '/';
         throw new Error('Session expired');
@@ -74,25 +89,18 @@ class APIClient {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ error: 'Request failed' }));
-        // Handle validation errors from express-validator
         if (error.errors && Array.isArray(error.errors)) {
-          // Group errors by field and create user-friendly messages
           const passwordErrors = error.errors
             .filter(e => e.path === 'password')
             .map(e => e.msg);
-          
           if (passwordErrors.length > 0) {
-            // Show password requirements clearly
             throw new Error(`Password requirements: ${passwordErrors.join(', ')}`);
           }
-          
-          // For other fields, show the error messages
           const errorMessages = error.errors.map(e => {
             if (e.path === 'email') return `Email: ${e.msg}`;
             if (e.path === 'name') return `Name: ${e.msg}`;
             return `${e.path}: ${e.msg}`;
           }).join('. ');
-          
           throw new Error(errorMessages || 'Validation failed');
         }
         throw new Error(error.error || error.message || `HTTP ${response.status}`);
@@ -104,12 +112,36 @@ class APIClient {
     }
   }
 
+  static async tryRefreshToken() {
+    const refreshToken = localStorage.getItem('refreshToken');
+    if (!refreshToken) return false;
+    try {
+      const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data.accessToken) {
+        this.setToken(data.accessToken);
+        if (data.refreshToken) localStorage.setItem('refreshToken', data.refreshToken);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   static async login(email, password) {
     const data = await this.request('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     });
     this.setToken(data.accessToken);
+    // localStorage is vulnerable to XSS; for higher security use httpOnly cookies.
     localStorage.setItem('refreshToken', data.refreshToken);
     localStorage.setItem('user', JSON.stringify(data.user));
     return data;
@@ -122,13 +154,18 @@ class APIClient {
     });
     this.setToken(data.accessToken);
     localStorage.setItem('refreshToken', data.refreshToken);
-    localStorage.setItem('userId', data.userId);
-    return data;
+    const user = data.user || { id: data.userId, email, name, role: 'user' };
+    localStorage.setItem('user', JSON.stringify(user));
+    return { ...data, user };
   }
 
   static async logout() {
     try {
-      await this.request('/auth/logout', { method: 'POST' });
+      const refreshToken = localStorage.getItem('refreshToken');
+      await this.request('/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify(refreshToken ? { refreshToken } : {}),
+      });
     } finally {
       this.removeToken();
     }
@@ -185,7 +222,7 @@ function LoginPage({ onLogin }) {
         onLogin(data.user);
       } else {
         const data = await APIClient.register(email, password, name);
-        onLogin({ id: data.userId, email, name });
+        onLogin(data.user || { id: data.userId, email, name, role: 'user' });
       }
     } catch (err) {
       setError(err.message);
@@ -380,16 +417,19 @@ export default function PayFlowApp() {
     }
   }, [user, fetchWallet, fetchAllWallets, fetchTransactions, fetchNotifications, fetchMetrics]);
 
+  // Poll wallet/transactions/notifications every 30s; metrics every 60s to reduce load
   useEffect(() => {
     if (!user) return;
-    const interval = setInterval(() => {
+    const dataInterval = setInterval(() => {
       fetchWallet();
       fetchTransactions();
       fetchNotifications();
-      fetchMetrics();
-    }, 3000);
-
-    return () => clearInterval(interval);
+    }, 30000);
+    const metricsInterval = setInterval(fetchMetrics, 60000);
+    return () => {
+      clearInterval(dataInterval);
+      clearInterval(metricsInterval);
+    };
   }, [user, fetchWallet, fetchTransactions, fetchNotifications, fetchMetrics]);
 
   const handleSendMoney = async () => {

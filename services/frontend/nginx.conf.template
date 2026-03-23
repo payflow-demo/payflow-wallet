@@ -1,4 +1,18 @@
-# Nginx config template with environment variable substitution
+# Nginx config template — variables substituted at container startup by docker-entrypoint.sh
+#
+# Required env vars:
+#   API_GATEWAY_URL  — where to proxy /api/* requests
+#                      K8s:          http://api-gateway.payflow.svc.cluster.local:80
+#                      Docker:       http://api-gateway:3000
+#   NGINX_RESOLVER   — DNS resolver used to resolve the proxy target at request time
+#                      K8s (all):    kube-dns.kube-system.svc.cluster.local
+#                      Docker:       127.0.0.11  (Docker's built-in DNS)
+#
+# Using a variable in proxy_pass forces DNS resolution at request time (not nginx startup),
+# which prevents CrashLoopBackOff when the upstream service isn't ready yet.
+resolver ${NGINX_RESOLVER} valid=10s;
+resolver_timeout 5s;
+
 server {
     listen 80;
     server_name localhost;
