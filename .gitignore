@@ -1,146 +1,170 @@
-# ──────────────────────────────────────────────
-# Terraform
-# ──────────────────────────────────────────────
-**/.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfplan
-*.backup
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-.terraform.lock.hcl
+# ═══════════════════════════════════════════════════════════════
+# Secrets & credentials (never commit these)
+# ═══════════════════════════════════════════════════════════════
 
-# Terraform variable files with real secrets
-terraform.tfvars
-!terraform.tfvars.example
-terraform/aws/spoke-vpc-eks/terraform.tfvars
-terraform/aws/managed-services/terraform.tfvars
-terraform/aws/finops/terraform.tfvars
-terraform/azure/finops/terraform.tfvars
-variables/finops.tfvars
-
-# ──────────────────────────────────────────────
-# Kubernetes secrets
-# ──────────────────────────────────────────────
-k8s/base/secrets/db-secrets.yaml
-k8s/secrets/db-secrets.yaml
-
-# TLS certificates (generated locally by generate-tls-cert.sh)
-k8s/ingress/certs/*.key
-k8s/ingress/certs/*.crt
-!k8s/ingress/certs/.gitkeep
-
-# Terraform generated plans
-**/apply.plan
-**/*.plan
-
-# Crash logs
-crash.log
-crash.*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*.swo
-
-#Ignore cursor AI rules
-.cursor/rules/codacy.mdc
-.codacy/
-
-# Debug files
-DEBUG_USER_LIST.md
-
-# Dependencies
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-package-lock.json
-
-# Environment
+# Environment — real values live only on your machine
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.*.example
 
-# Logs
-logs/
-*.log
+# Package manager tokens (npm, Yarn Berry)
+.npmrc
+!.npmrc.example
+.yarnrc.yml
+!.yarnrc.example
+.pnpm-debug.log*
 
-# Coverage
-coverage/
-.nyc_output/
-
-# Build
-dist/
-build/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.cursor/rules/
-
-# Sensitive files
+# SSH / TLS material (if copied into the repo by mistake)
 *.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+id_ecdsa
+*_rsa
+*_ed25519
 *.key
+!**/.gitkeep
 *.crt
 *.cert
-*.tar
-*.pkg
-secrets/
-*.secret
+*.csr
+
+# Kubeconfig exports (often pasted during debugging)
+kubeconfig
+*.kubeconfig
+kube-config.yaml
+**/kubeconfig-*
+
+# Cloud & identity CLI dumps
+azure-credentials.json
+application_default_credentials.json
+**/gcp-*-credentials.json
+**/service-account*.json
+!**/*credentials*.example.json
+.aws/credentials
+.aws/config
+.azure/
+
+# Cloudflare Tunnel (tokens live in ~/.cloudflared — never copy into repo)
+.cloudflared/
+cloudflared*.pem
+**/cloudflare-tunnel-token.txt
+**/cloudflare-credentials.json
 k8s/secrets/cloudflare-tunnel-secret.yaml
 
-# Database
-*.sql
-*.db
-*.sqlite
+# Generic high-risk filenames (narrow exceptions if you add *.example)
+*.secret
+*.secrets
+secrets/
+!secrets/.gitkeep
 
-# Documentation directories
-docs/
-book/
-cloud/
-tf-infra-docs/
-
-# Shell scripts
-*.sh
-
-# Docker Hub push scripts and logs
-docker-push*.sh
-docker-push*.log
-*_push.log
-dockerhub-push*.sh
-
-#Ignore cursor AI rules
-.cursor/rules/codacy.mdc
-logs/
-
-# Terraform
-.terraform/
+# Terraform sensitive inputs & state
+**/.terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
 tfplan
 tfplan.bin
 .terraform.lock.hcl
-terraform.tfstate.backup
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 **/backend.tf.backup
-*.tfvars
-terraform.tfvars
-!*.tfvars.example
-azure-credentials.json
-*credentials*.json
 backend-config.hcl
-# Terraform-managed secret temp files (contain credentials)
+*.tfvars
+!*.tfvars.example
+terraform.tfvars
+terraform/aws/spoke-vpc-eks/terraform.tfvars
+terraform/aws/managed-services/terraform.tfvars
+terraform/aws/finops/terraform.tfvars
+terraform/azure/finops/terraform.tfvars
+variables/finops.tfvars
 terraform/aws/managed-services/.secret-*.json
-k8s/secrets/db-secrets.yaml
+
+# Kubernetes — real cluster secrets (local overlay uses committed dev secrets by design;
+# ignore copies or alternate paths that hold production values)
 k8s/base/secrets/db-secrets.yaml
+k8s/secrets/db-secrets.yaml
+
+# TLS under ingress (generated locally)
+k8s/ingress/certs/*.key
+k8s/ingress/certs/*.crt
+!k8s/ingress/certs/.gitkeep
+
+# Plans & crash output that may embed resource IDs
+**/apply.plan
+**/*.plan
+crash.log
+crash.*.log
+
+# Local overrides & scratch
+*.local.yaml
+*.local.yml
+secrets.local.*
+local-secrets.*
+**/override-values.yaml
+.envrc
+
+# ═══════════════════════════════════════════════════════════════
+# Dependencies & build
+# ═══════════════════════════════════════════════════════════════
+
+node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+
+# ═══════════════════════════════════════════════════════════════
+# Logs & OS
+# ═══════════════════════════════════════════════════════════════
+
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+# macOS folder metadata (never commit — use `git rm --cached '**/.DS_Store'` if slipped in)
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# ═══════════════════════════════════════════════════════════════
+# Editor / tooling (local-only)
+# ═══════════════════════════════════════════════════════════════
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+# Codacy MCP rule often machine-specific; other .cursor/rules are shared
+.cursor/rules/codacy.mdc
+.codacy/
+
+# ═══════════════════════════════════════════════════════════════
+# Project-specific (non-secret housekeeping)
+# ═══════════════════════════════════════════════════════════════
+
+# Local MicroK8s deploy script counter (machine-specific)
+.mk8-deploy-number
+
+DEBUG_USER_LIST.md
+docs/CONTENT-NOTES.md
+docs/EKS-MIGRATION-MENTEE-INSTRUCTIONS.md
+docs/AUDIT-FOLLOW-UP-*.md
+book/
+cloud/
+tf-infra-docs/
+
+# Docker Hub push logs (may contain registry hints)
+docker-push*.log
+*_push.log
+
+# Archives produced during image transfer / backup (can be huge)
+*.image.tar
+payflow-*.tar
