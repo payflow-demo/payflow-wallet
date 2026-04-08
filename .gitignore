@@ -142,8 +142,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
-# Codacy MCP rule often machine-specific; other .cursor/rules are shared
-.cursor/rules/codacy.mdc
+# Cursor IDE config (local / team choice — not part of app source)
+.cursor/
 .codacy/
 
 # ═══════════════════════════════════════════════════════════════
