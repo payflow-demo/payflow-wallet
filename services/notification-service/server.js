@@ -676,8 +676,8 @@ app.use((req, res) => {
 // ============================================
 // SERVER STARTUP
 // ============================================
-const server = app.listen(PORT, () => {
-  logger.info(`Notification service running on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  logger.info(`Notification service listening on 0.0.0.0:${PORT}`);
 });
 
 // Graceful shutdown (12-factor: disposability) with timeout under terminationGracePeriodSeconds

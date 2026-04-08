@@ -11,7 +11,7 @@ const CircuitBreaker = require('opossum');
 const retry = require('async-retry');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('./shared/logger');
-const { register: sharedRegister, metricsMiddleware, metricsHandler, transactionTotal, transactionDuration, queueDepth, rabbitmqPublishErrors, rabbitmqConsumeErrors, circuitBreakerState, circuitBreakerTransitions, pendingTransactionsGauge, oldestPendingTransactionGauge, pendingTransactionAmountGauge } = require('./shared/metrics');
+const { register: sharedRegister, metricsMiddleware, metricsHandler, transactionTotal, transactionDuration, queueDepth, rabbitmqPublishErrors, rabbitmqConsumeErrors, circuitBreakerState, circuitBreakerTransitions, pendingTransactionsGauge, oldestPendingTransactionGauge, pendingTransactionAmountGauge, dbConnectionPoolSize } = require('./shared/metrics');
 require('dotenv').config();
 
 const app = express();
@@ -68,6 +68,18 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,  // 10s for RDS cold start / TLS handshake
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
+
+function updateDbPoolMetrics() {
+  try {
+    dbConnectionPoolSize.set({ state: 'active' }, Math.max(0, pool.totalCount - pool.idleCount));
+    dbConnectionPoolSize.set({ state: 'idle' }, pool.idleCount);
+    dbConnectionPoolSize.set({ state: 'waiting' }, pool.waitingCount || 0);
+  } catch (_) {
+    /* ignore */
+  }
+}
+setInterval(updateDbPoolMetrics, 15000);
+updateDbPoolMetrics();
 
 // ============================================
 // REDIS CONNECTION (for idempotency)

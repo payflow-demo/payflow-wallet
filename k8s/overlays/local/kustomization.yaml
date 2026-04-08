@@ -4,27 +4,45 @@ kind: Kustomization
 namespace: payflow
 
 # Base resources
-resources:
-  - ../../base
-  - secrets-db-secrets.yaml
   # Local infrastructure (copies under overlay so Kustomize allows; sync from k8s/infrastructure/ if those change)
-  - infra/postgres.yaml
-  - infra/redis.yaml
-  - infra/rabbitmq.yaml
   # Local only: Ingress for www.payflow.local / api.payflow.local (EKS uses ALB; not in this overlay)
-  - ingress-local.yaml
+resources:
+- ../../base
+- secrets-db-secrets.yaml
+- infra/postgres.yaml
+- infra/redis.yaml
+- infra/rabbitmq.yaml
+- ingress-local.yaml
 
 # Local-specific patches (EKS overlay has its own patches; this file is never applied to EKS)
 # Note: patchesStrategicMerge/commonLabels are deprecated but safe here; switching to
 # patches/labels can change selector/template merge behavior and break apply on existing cluster.
 patchesStrategicMerge:
-  - local-config-patch.yaml
-  - local-env-patch.yaml   # NODE_ENV=development so default DB password allowed (local only)
-  - local-quota-patch.yaml # Higher quota for production-like replica counts (local only)
-  - local-probe-delays-patch.yaml  # Longer probe delays so api-gateway/auth become Ready (avoids 502)
+- local-config-patch.yaml
+- local-env-patch.yaml
+- local-quota-patch.yaml
+- local-probe-delays-patch.yaml
 
 commonLabels:
-  environment: local
   cloud-provider: local
   cluster: minikube
-
+  environment: local
+images:
+- name: veeno/api-gateway
+  newName: localhost:32000/api-gateway
+  newTag: 5a38691
+- name: veeno/auth-service
+  newName: localhost:32000/auth-service
+  newTag: 5a38691
+- name: veeno/frontend
+  newName: localhost:32000/frontend
+  newTag: 5a38691
+- name: veeno/notification-service
+  newName: localhost:32000/notification-service
+  newTag: 5a38691
+- name: veeno/transaction-service
+  newName: localhost:32000/transaction-service
+  newTag: 5a38691
+- name: veeno/wallet-service
+  newName: localhost:32000/wallet-service
+  newTag: 5a38691

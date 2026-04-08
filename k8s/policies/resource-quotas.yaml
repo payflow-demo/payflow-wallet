@@ -72,9 +72,8 @@ spec:
     # Increased to 30 to accommodate CronJob pods
     pods: "30"                   # Maximum 30 pods
     
-    # Maximum number of services
-    # Services are lightweight, but too many can cause issues
-    services: "10"               # Maximum 10 services
+    # Maximum number of services (app + infra + monitoring exporters)
+    services: "20"
     
     # Maximum number of PersistentVolumeClaims
     # Storage is expensive - limit PVCs to prevent over-provisioning

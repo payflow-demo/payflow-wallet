@@ -2,13 +2,29 @@
 # =============================================================================
 # PayFlow – One-shot MicroK8s deploy for beginners
 # =============================================================================
-# Installs MicroK8s if missing, spins up a 4-node cluster (1 control plane +
-# 3 workers), enables all addons, optionally builds/pushes images, deploys app.
+# Installs MicroK8s if missing, enables addons, optionally builds/pushes images,
+# deploys PayFlow (k8s/overlays/local).
 #
-# Usage:  ./scripts/deploy-microk8s.sh
-# Run from repo root. Requires: Docker, Multipass (macOS).
-# Override node count (skips prompt): WORKER_COUNT=0 ./scripts/deploy-microk8s.sh  (single-node)
-# Full cluster: WORKER_COUNT=3 ./scripts/deploy-microk8s.sh
+# Platforms
+# ---------
+# • macOS  — Multipass + Homebrew microk8s installer; can auto-create microk8s-vm
+#            and 0–3 worker VMs (Multipass), then join them to the cluster.
+# • Linux  — MicroK8s via snap on the host (single-node in this script). Extra
+#            workers are not auto-provisioned; use microk8s add-node manually.
+# • Windows — Native Git Bash / CMD / PowerShell are NOT supported here. Use
+#            WSL2 with Ubuntu (or another Linux distro): uname is Linux, so the
+#            Linux path runs. Install Docker (Desktop WSL integration or docker.io
+#            in WSL) and snap microk8s inside WSL, then run this script from bash
+#            in that environment.
+#
+# Usage (from repo root):
+#   ./scripts/deploy-microk8s.sh                    full deploy (prompts for build + worker count)
+#   WORKER_COUNT=0 ./scripts/deploy-microk8s.sh       skip worker prompt (single-node)
+#   ./scripts/deploy-microk8s.sh add-worker [NAME] [CPUS] [MEMORY_GB] [DISK_GB]
+#                                                     add one Multipass worker (macOS); NAME defaults to next payflow-worker-N
+#   ./scripts/deploy-microk8s.sh remove-workers       drain/remove payflow-worker-* nodes, purge VMs, delete payflow namespace
+#
+# Requires: Docker running (full deploy only). macOS also needs Multipass.
 # =============================================================================
 set -e
 
@@ -62,16 +78,62 @@ DOCKER_REGISTRY="localhost:32000"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Subcommands (skip full deploy prompts; macOS Multipass only for worker ops)
+DEPLOY_MODE="full"
+ADD_WORKER_VM=""
+ADD_WORKER_CPU=""
+ADD_WORKER_MEM_GB=""
+ADD_WORKER_DISK_GB=""
+case "${1:-}" in
+  add-worker)
+    DEPLOY_MODE="add-worker"
+    shift
+    ADD_WORKER_VM="${1:-}"
+    ADD_WORKER_CPU="${2:-2}"
+    ADD_WORKER_MEM_GB="${3:-4}"
+    ADD_WORKER_DISK_GB="${4:-20}"
+    ;;
+  remove-workers)
+    DEPLOY_MODE="remove-workers"
+    shift
+    ;;
+  help|-h|--help)
+    printf '%s\n' \
+      "Usage: ./scripts/deploy-microk8s.sh [add-worker [NAME] [CPUS] [MEM_GB] [DISK_GB] | remove-workers | help]" \
+      "  (no args)       — full PayFlow deploy to MicroK8s" \
+      "  add-worker      — create one worker VM and join cluster (macOS Multipass)" \
+      "  remove-workers  — remove payflow-worker-* from cluster, purge VMs, delete namespace payflow" \
+      "  WORKER_COUNT=N  — set in environment to skip worker-count prompt on full deploy"
+    exit 0
+    ;;
+esac
+
+if [ "$DEPLOY_MODE" != "full" ] && [ "$(uname -s)" != "Darwin" ]; then
+  die "Subcommands add-worker and remove-workers require macOS with Multipass."
+fi
+
 # Space-separated list — no arrays with inline comments (bash 3.2 macOS compat)
 SERVICES="api-gateway auth-service wallet-service transaction-service notification-service frontend"
 
 printf "\n${BLUE}=============================================================${NC}\n"
-printf "${BLUE}   PayFlow – MicroK8s 4-node cluster deploy${NC}\n"
+case "$DEPLOY_MODE" in
+  add-worker)  printf "${BLUE}   PayFlow – MicroK8s add worker${NC}\n" ;;
+  remove-workers) printf "${BLUE}   PayFlow – MicroK8s remove workers${NC}\n" ;;
+  *)           printf "${BLUE}   PayFlow – MicroK8s 4-node cluster deploy${NC}\n" ;;
+esac
 printf "${BLUE}=============================================================${NC}\n\n"
 
 # -----------------------------------------------------------------------------
 # 1) Prompt: build and push images?
 # -----------------------------------------------------------------------------
+if [ "$DEPLOY_MODE" != "full" ]; then
+  DO_BUILD=false
+  PUSH_HUB=false
+  DOCKER_USER=""
+  DOCKERHUB_TAG=""
+  WORKER_COUNT=0
+  ok "Mode: ${DEPLOY_MODE} — skipping image-build prompts"
+else
 printf "${YELLOW}Do you want to build and push Docker images before deploying?${NC}\n"
 printf "  (Answer no to skip — useful if images are already in the registry)\n\n"
 printf "  Build and push images? [y/N]: "
@@ -123,11 +185,12 @@ if [ -z "${WORKER_COUNT+set}" ]; then
     printf "  ${GREEN}1–3${NC} — add workers (more capacity; each worker needs several GB RAM)\n"
     printf "  ${GREEN}Enter${NC} — default ${GREEN}3${NC} workers (full multi-node walkthrough)\n\n"
   else
-    printf "${YELLOW}Worker nodes${NC} — on Linux, workers must be joined manually (this script provisions single-node only).\n"
-    printf "  ${GREEN}0${NC} — single-node cluster (recommended for Linux; add workers manually later)\n"
-    printf "  ${GREEN}1–3${NC} — value is recorded but workers will NOT be auto-provisioned on Linux\n\n"
+    printf "${YELLOW}Worker nodes${NC} — on Linux (and WSL2), this script only manages a ${GREEN}single${NC} MicroK8s node.\n"
+    printf "  Extra workers are ${GREEN}not${NC} created automatically; use ${GREEN}microk8s add-node${NC} on the host if you need a multi-node cluster.\n"
+    printf "  ${GREEN}0${NC} — single-node (recommended on Linux / WSL2)\n"
+    printf "  ${GREEN}1–3${NC} — same single-node run; the number is ignored for provisioning (macOS-only Multipass workers)\n\n"
   fi
-  printf "  How many worker VMs? [0-3, default 3]: "
+  printf "  How many workers? [0-3, default 3; macOS=Multipass VMs, Linux/WSL=ignored for auto-join]: "
   read -r WC_ANSWER
   WC_ANSWER="$(printf '%s' "${WC_ANSWER:-3}" | tr -d '[:space:]')"
   case "$WC_ANSWER" in
@@ -141,45 +204,47 @@ fi
 
 printf "\n"
 
+fi
+
 # -----------------------------------------------------------------------------
-# 2) Check Docker
+# 2) Check Docker (full deploy only — add-worker/remove-workers do not need Docker)
 # -----------------------------------------------------------------------------
-command -v docker > /dev/null 2>&1 \
-  || die "Docker not found. Install Docker Desktop or Docker Engine then re-run."
-docker info > /dev/null 2>&1 \
-  || die "Docker daemon is not running. Start Docker then re-run."
-ok "Docker is available"
+if [ "$DEPLOY_MODE" = "full" ]; then
+  command -v docker > /dev/null 2>&1 \
+    || die "Docker not found. Install Docker Desktop or Docker Engine then re-run."
+  docker info > /dev/null 2>&1 \
+    || die "Docker daemon is not running. Start Docker then re-run."
+  ok "Docker is available"
+fi
 
 # -----------------------------------------------------------------------------
 # 3) Install MicroK8s if not present
 # -----------------------------------------------------------------------------
 install_microk8s_mac() {
-  # If MicroK8s is already available on the host, use it.
-  if command -v microk8s > /dev/null 2>&1; then
-    ok "MicroK8s already installed (host)"
-    return 0
-  fi
-
-  # If MicroK8s is installed in Multipass already, do NOT install again.
-  # On macOS, the common setup is MicroK8s running inside the 'microk8s-vm' VM.
+  # On macOS the control plane lives in Multipass 'microk8s-vm'. The Homebrew `microk8s` binary
+  # is only the installer CLI — having it on PATH does NOT mean the VM exists (e.g. after
+  # `multipass delete --purge microk8s-vm`). Always key off the VM first.
   if multipass list --format csv 2>/dev/null | grep -q "^microk8s-vm,"; then
-    ok "MicroK8s found in Multipass VM (microk8s-vm)"
-    # Provide a microk8s() wrapper so the rest of this script can keep calling `microk8s ...`.
-    # Run with sudo inside the VM to avoid "Insufficient permissions to access MicroK8s."
-    microk8s() { multipass exec microk8s-vm -- sudo microk8s "$@"; }
+    ok "MicroK8s VM (microk8s-vm) already present"
     return 0
   fi
 
-  info "MicroK8s not found — installing via Homebrew..."
-  command -v brew > /dev/null 2>&1 \
-    || die "Homebrew is required on macOS. Install from https://brew.sh then re-run."
-  brew install ubuntu/microk8s/microk8s
+  # No control-plane VM — need the installer CLI, then microk8s install creates microk8s-vm.
+  if ! command -v microk8s > /dev/null 2>&1; then
+    info "MicroK8s CLI not on PATH — installing via Homebrew..."
+    command -v brew > /dev/null 2>&1 \
+      || die "Homebrew is required on macOS. Install from https://brew.sh then re-run."
+    brew install ubuntu/microk8s/microk8s
+  else
+    ok "MicroK8s CLI on PATH — creating control-plane VM (none in Multipass yet)"
+  fi
+
   info "Creating control-plane VM (${CONTROL_CPU} CPU, ${CONTROL_MEM_GB}GB RAM, ${CONTROL_DISK_GB}GB disk)..."
   microk8s install \
     --cpu="$CONTROL_CPU" \
-    --mem="$CONTROL_MEM_GB" \
+    --memory="$CONTROL_MEM_GB" \
     --disk="$CONTROL_DISK_GB"
-  ok "MicroK8s installed"
+  ok "MicroK8s control-plane VM created"
 }
 
 install_microk8s_linux() {
@@ -197,16 +262,27 @@ install_microk8s_linux() {
 
 OS="$(uname -s)"
 case "$OS" in
+  MINGW*|MSYS*|CYGWIN*)
+    die "Native Windows shells are not supported (OS reports: ${OS}). Use WSL2 + Ubuntu: install Docker and MicroK8s inside WSL, open bash there, clone the repo, run ./scripts/deploy-microk8s.sh — see docs/microk8s-deployment.md (Platforms)."
+    ;;
+esac
+
+case "$OS" in
   Darwin)
     command -v multipass > /dev/null 2>&1 \
       || die "Multipass is required on macOS. Install: brew install multipass"
     install_microk8s_mac
+    # Always proxy into microk8s-vm (brew CLI alone is inconsistent for add-node / status after a fresh install).
+    microk8s() { multipass exec microk8s-vm -- sudo microk8s "$@"; }
     ;;
   Linux)
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      ok "WSL2 detected — using Linux MicroK8s path (ensure Docker reaches this distro: Docker Desktop → Resources → WSL integration)"
+    fi
     install_microk8s_linux
     ;;
   *)
-    die "Unsupported OS: ${OS}. This script supports macOS and Linux."
+    die "Unsupported OS: ${OS}. Supported: macOS (Darwin), Linux (including WSL2). Windows: use WSL2 — see script header and docs/microk8s-deployment.md."
     ;;
 esac
 
@@ -226,16 +302,92 @@ microk8s status --wait-ready
 ok "Control-plane ready"
 
 # -----------------------------------------------------------------------------
-# 5) KUBECONFIG — set early so kubectl works for worker checks and addons
+# kubeconfig from the real control plane (macOS: Multipass + sudo inside VM)
 # -----------------------------------------------------------------------------
 #
-# IMPORTANT: On macOS (Multipass), the VM IP can change across restarts.
-# Always regenerate kubeconfig from the running control-plane so kubectl points
-# at the correct API server address (avoids stale 192.168.64.x timeouts).
-mkdir -p "${HOME}/.kube"
-microk8s config > "${HOME}/.kube/microk8s-config"
-export KUBECONFIG="${HOME}/.kube/microk8s-config"
+# On macOS, `microk8s config` on the host can fail or be unreliable; the
+# canonical kubeconfig is produced inside microk8s-vm. On Linux/WSL2, use the
+# host snap as usual.
+#
+# Also: Multipass VM IP can change across restarts — always refresh so kubectl
+# points at the correct API server (avoids stale 192.168.64.x timeouts).
+refresh_microk8s_kubeconfig() {
+  mkdir -p "${HOME}/.kube"
+  if [ "$OS" = "Darwin" ] && multipass list --format csv 2>/dev/null | grep -q "^microk8s-vm,"; then
+    multipass exec microk8s-vm -- sudo microk8s config > "${HOME}/.kube/microk8s-config" \
+      || die "Failed to write kubeconfig. Try: multipass exec microk8s-vm -- sudo microk8s status"
+  else
+    microk8s config > "${HOME}/.kube/microk8s-config" \
+      || die "Failed to write kubeconfig (microk8s config)"
+  fi
+  export KUBECONFIG="${HOME}/.kube/microk8s-config"
+}
+
+# Tear down Multipass payflow-worker-* VMs and PayFlow workloads (macOS). Safe to re-run.
+# MicroK8s creates one-off hostpath "mkdir" pods with nodeSelector kubernetes.io/hostname=<node>.
+# After a worker node is removed, those pods stay Pending and can confuse storage provisioning.
+delete_orphan_kube_system_node_selector_pods() {
+  local valid pname nh
+  valid="$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n')"
+  while IFS="$(printf '\t')" read -r pname nh; do
+    [ -n "$pname" ] || continue
+    [ -n "$nh" ] || continue
+    echo "$valid" | grep -qx "$nh" && continue
+    info "Deleting orphan kube-system pod ${pname} (nodeSelector hostname=${nh} — node no longer exists)..."
+    kubectl delete pod "$pname" -n kube-system --ignore-not-found 2>/dev/null || true
+  done <<EOF
+$(kubectl get pods -n kube-system -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.nodeSelector.kubernetes\.io/hostname}{"\n"}{end}' 2>/dev/null)
+EOF
+}
+
+remove_payflow_workers_mac() {
+  info "Removing payflow-worker-* Kubernetes nodes and Multipass VMs..."
+  k_nodes=""
+  if command -v kubectl > /dev/null 2>&1; then
+    k_nodes="$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | tr ' ' '\n' | grep '^payflow-worker-' || true)"
+  fi
+  vms="$(multipass list --format csv 2>/dev/null | awk -F, 'NR>1 && $1 ~ /^payflow-worker-/ {print $1}' | tr '\n' ' ')"
+
+  for node in $k_nodes; do
+    info "Draining ${node}..."
+    kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --force --grace-period=15 --timeout=180s 2>/dev/null \
+      || warn "  drain ${node} had issues (continuing)"
+  done
+
+  for vm in $vms; do
+    if multipass list --format csv 2>/dev/null | grep -q "^${vm},Running,"; then
+      multipass exec "$vm" -- sudo microk8s leave 2>/dev/null || true
+    fi
+  done
+
+  for node in $k_nodes; do
+    multipass exec microk8s-vm -- sudo microk8s remove-node "$node" --force 2>/dev/null || true
+    kubectl delete node "$node" --ignore-not-found 2>/dev/null || true
+  done
+
+  for vm in $vms; do
+    info "Purging Multipass VM ${vm}..."
+    multipass delete "$vm" --purge 2>/dev/null || true
+  done
+
+  delete_orphan_kube_system_node_selector_pods
+
+  info "Deleting namespace payflow (if present)..."
+  kubectl delete namespace payflow --ignore-not-found --wait=false 2>/dev/null || true
+  ok "remove-workers finished. If payflow was deleting, wait until: kubectl get ns payflow (NotFound)"
+}
+
+# -----------------------------------------------------------------------------
+# 5) KUBECONFIG — set early so kubectl works for worker checks and addons
+# -----------------------------------------------------------------------------
+info "Writing kubeconfig for kubectl (refreshed from control plane)..."
+refresh_microk8s_kubeconfig
 ok "KUBECONFIG=$KUBECONFIG"
+
+if [ "$DEPLOY_MODE" = "remove-workers" ]; then
+  remove_payflow_workers_mac
+  exit 0
+fi
 
 # -----------------------------------------------------------------------------
 # 6) Spin up and join worker nodes (macOS via Multipass)
@@ -265,19 +417,29 @@ wait_for_worker_ready() {
 }
 
 # Launch a worker VM (cloud-init installs microk8s). Returns 0 on success.
+# WORKER_SNAP_CHANNEL must match microk8s-vm's snap tracking (see spin_up_workers_mac).
 launch_worker_vm() {
   NODE="$1"
+  ch="${WORKER_SNAP_CHANNEL:-latest/stable}"
+  case "$ch" in
+    '' | *[!a-zA-Z0-9._/-]*)
+      warn "Invalid WORKER_SNAP_CHANNEL '${ch}' — using latest/stable"
+      ch="latest/stable"
+      ;;
+  esac
   multipass launch \
     --name "$NODE" \
     --cpus "$WORKER_CPU" \
     --memory "${WORKER_MEM_GB}G" \
     --disk "${WORKER_DISK_GB}G" \
-    --cloud-init - << 'CLOUDINIT'
+    --cloud-init - \
+    22.04 \
+    <<CLOUDINIT
 #cloud-config
 packages:
   - snapd
 runcmd:
-  - snap install microk8s --classic
+  - snap install microk8s --classic --channel=${ch}
   - usermod -a -G microk8s ubuntu
 CLOUDINIT
 }
@@ -288,12 +450,61 @@ worker_vm_reports_joined() {
   multipass exec "$NODE" -- sudo microk8s status 2>/dev/null | grep -qi "acting as a node in a cluster"
 }
 
+fetch_worker_snap_channel_mac() {
+  multipass exec microk8s-vm -- bash -lc \
+    "snap list microk8s --color=never 2>/dev/null | awk '/^microk8s[[:space:]]/ {print \$4; exit}'" 2>/dev/null || true
+}
+
+get_join_command_mac() {
+  multipass exec microk8s-vm -- sudo microk8s add-node --format short 2>/dev/null | head -n 1
+}
+
+# Max ~4 minutes per node (CNI/kubelet can be slow right after join).
+wait_kubectl_node_ready() {
+  NODE="$1"
+  max_attempts="${2:-48}"
+  info "Waiting for Kubernetes node ${NODE} to be Ready (up to ~$((max_attempts * 5 / 60)) min)..."
+  attempt=0
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    attempt=$((attempt + 1))
+    st="$(kubectl get node "$NODE" --no-headers 2>/dev/null | awk '{print $2}' || true)"
+    if [ "$st" = "Ready" ]; then
+      ok "${NODE} is Ready"
+      return 0
+    fi
+    if [ "$attempt" -eq 1 ] || [ $((attempt % 12)) -eq 0 ]; then
+      warn "  ${NODE} status=${st:-unknown} (attempt ${attempt}/${max_attempts})..."
+    fi
+    sleep 5
+  done
+  warn "${NODE} not Ready after ~$((max_attempts * 5 / 60))m — check: kubectl describe node ${NODE}"
+  return 1
+}
+
+# Join token always comes from the control-plane VM (reliable on macOS Multipass).
+join_worker_node_mac() {
+  NODE="$1"
+  JOIN_CMD="$(get_join_command_mac)"
+  [ -n "$JOIN_CMD" ] || die "Could not get join command from microk8s-vm (is the control plane healthy?)"
+  info "Joining ${NODE} to cluster..."
+  multipass exec "$NODE" -- sudo $JOIN_CMD --worker
+  wait_kubectl_node_ready "$NODE" \
+    || die "Worker ${NODE} did not become Ready after join. Try: kubectl describe node ${NODE} — or remove-workers and re-run with matching MicroK8s snap channel."
+}
+
 spin_up_workers_mac() {
   # Refresh kubeconfig so kubectl sees the real API IP (Multipass IP can change).
   # Without this, kubectl get node fails and the script wrongly tries to join every time.
-  mkdir -p "${HOME}/.kube"
-  microk8s config > "${HOME}/.kube/microk8s-config"
-  export KUBECONFIG="${HOME}/.kube/microk8s-config"
+  refresh_microk8s_kubeconfig
+
+  WORKER_SNAP_CHANNEL="$(fetch_worker_snap_channel_mac)"
+  if [ -z "$WORKER_SNAP_CHANNEL" ]; then
+    warn "Could not read MicroK8s snap tracking on microk8s-vm; workers will use latest/stable."
+    warn "  If that mismatches the control plane, use WORKER_COUNT=0 or fix the VM, then re-run."
+    WORKER_SNAP_CHANNEL="latest/stable"
+  else
+    info "Worker VMs will install MicroK8s --channel=${WORKER_SNAP_CHANNEL} (matches control plane)"
+  fi
 
   i=1
   while [ "$i" -le "$WORKER_COUNT" ]; do
@@ -347,22 +558,86 @@ spin_up_workers_mac() {
     if kubectl get node "$NODE" > /dev/null 2>&1; then
       ok "${NODE} already in cluster — skipping join"
     elif worker_vm_reports_joined "$NODE"; then
-      ok "${NODE} MicroK8s already reports cluster member — skipping join (if kubectl was wrong, run: microk8s config > ~/.kube/microk8s-config)"
+      ok "${NODE} MicroK8s already reports cluster member — skipping join (if kubectl was wrong, run: multipass exec microk8s-vm -- sudo microk8s config > ~/.kube/microk8s-config && export KUBECONFIG=\$HOME/.kube/microk8s-config)"
     else
-      info "Joining ${NODE} to cluster..."
-      # Generate a fresh token each time (tokens expire after 24h)
-      JOIN_CMD="$(microk8s add-node --format short 2>/dev/null | head -1)"
-      multipass exec "$NODE" -- sudo $JOIN_CMD --worker
-      ok "${NODE} joined as worker"
+      join_worker_node_mac "$NODE"
+      ok "${NODE} join step completed"
     fi
 
     i=$((i + 1))
   done
 }
 
+# Block full deploy until every expected worker is registered and Ready (macOS Multipass).
+verify_payflow_workers_ready_mac() {
+  [ "$WORKER_COUNT" -gt 0 ] || return 0
+  info "Confirming ${WORKER_COUNT} worker node(s) are joined and Ready before continuing..."
+  i=1
+  while [ "$i" -le "$WORKER_COUNT" ]; do
+    NODE="payflow-worker-${i}"
+    if ! kubectl get node "$NODE" > /dev/null 2>&1; then
+      die "Worker ${NODE} is not in the cluster (kubectl get nodes). Re-run remove-workers, fix Multipass/join, or use WORKER_COUNT=0."
+    fi
+    if ! wait_kubectl_node_ready "$NODE"; then
+      die "Worker ${NODE} is not Ready — aborting deploy before addons/app. Fix the node or run WORKER_COUNT=0. Hint: kubectl describe node ${NODE}"
+    fi
+    i=$((i + 1))
+  done
+  ok "All ${WORKER_COUNT} worker(s) joined and Ready"
+}
+
+add_payflow_worker_mac() {
+  VM="${ADD_WORKER_VM}"
+  if [ -z "$VM" ]; then
+    n=1
+    while multipass list --format csv 2>/dev/null | grep -q "^payflow-worker-${n},"; do
+      n=$((n + 1))
+    done
+    VM="payflow-worker-${n}"
+  fi
+  if multipass list --format csv 2>/dev/null | grep -q "^${VM},"; then
+    die "Multipass VM '${VM}' already exists. Pick another name or: multipass delete ${VM} --purge"
+  fi
+
+  refresh_microk8s_kubeconfig
+  WORKER_SNAP_CHANNEL="$(fetch_worker_snap_channel_mac)"
+  if [ -z "$WORKER_SNAP_CHANNEL" ]; then
+    warn "Could not read MicroK8s snap tracking on microk8s-vm; using latest/stable."
+    WORKER_SNAP_CHANNEL="latest/stable"
+  else
+    info "Worker will use MicroK8s --channel=${WORKER_SNAP_CHANNEL} (matches control plane)"
+  fi
+
+  WORKER_CPU="$ADD_WORKER_CPU"
+  WORKER_MEM_GB="$ADD_WORKER_MEM_GB"
+  WORKER_DISK_GB="$ADD_WORKER_DISK_GB"
+
+  info "Creating ${VM} (${WORKER_CPU} CPU, ${WORKER_MEM_GB}GB RAM, ${WORKER_DISK_GB}GB disk)..."
+  launch_worker_vm "$VM" || die "multipass launch failed for ${VM}"
+  wait_for_worker_ready "$VM" || die "MicroK8s did not become ready on ${VM}"
+
+  if kubectl get node "$VM" > /dev/null 2>&1; then
+    ok "${VM} already registered in the cluster"
+  elif worker_vm_reports_joined "$VM"; then
+    ok "${VM} already reports cluster membership"
+  else
+    join_worker_node_mac "$VM"
+  fi
+
+  printf "\n"
+  info "Cluster nodes:"
+  kubectl get nodes -o wide
+  ok "add-worker complete: ${VM}"
+}
+
+if [ "$DEPLOY_MODE" = "add-worker" ]; then
+  add_payflow_worker_mac
+  exit 0
+fi
+
 spin_up_workers_linux() {
-  warn "Automatic worker provisioning on Linux is not implemented."
-  warn "To add workers: run 'microk8s add-node' and join each worker manually."
+  warn "Automatic worker provisioning on Linux/WSL2 is not implemented (macOS Multipass only)."
+  warn "To add workers: on the control plane run 'microk8s add-node' and join each node manually."
   warn "Continuing as single-node..."
 }
 
@@ -370,8 +645,11 @@ if [ "$WORKER_COUNT" -gt 0 ]; then
   printf "\n"
   info "Setting up ${WORKER_COUNT} worker node(s)..."
   case "$OS" in
-    Darwin) spin_up_workers_mac ;;
-    Linux)  spin_up_workers_linux ;;
+    Darwin)
+      spin_up_workers_mac
+      verify_payflow_workers_ready_mac
+      ;;
+    Linux) spin_up_workers_linux ;;
   esac
   printf "\n"
   info "Cluster nodes:"

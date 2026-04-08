@@ -6,7 +6,7 @@ const morgan = require('morgan');
 const { body, param, validationResult } = require('express-validator');
 const client = require('prom-client');
 const logger = require('./shared/logger');
-const { register: sharedRegister, metricsMiddleware, metricsHandler, transactionTotal, databaseQueryDuration, cacheHitRate, dbQueryErrors, dbConnectionErrors } = require('./shared/metrics');
+const { register: sharedRegister, metricsMiddleware, metricsHandler, transactionTotal, databaseQueryDuration, cacheHitRate, dbQueryErrors, dbConnectionErrors, dbConnectionPoolSize } = require('./shared/metrics');
 require('dotenv').config();
 
 // #### Prometheus Metrics Setup ####
@@ -99,6 +99,18 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,  // 10s for RDS cold start / TLS handshake
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false,
 });
+
+function updateDbPoolMetrics() {
+  try {
+    dbConnectionPoolSize.set({ state: 'active' }, Math.max(0, pool.totalCount - pool.idleCount));
+    dbConnectionPoolSize.set({ state: 'idle' }, pool.idleCount);
+    dbConnectionPoolSize.set({ state: 'waiting' }, pool.waitingCount || 0);
+  } catch (_) {
+    /* ignore */
+  }
+}
+setInterval(updateDbPoolMetrics, 15000);
+updateDbPoolMetrics();
 
 // Wrap pool.query to measure duration using shared metrics
 const originalQuery = pool.query.bind(pool);

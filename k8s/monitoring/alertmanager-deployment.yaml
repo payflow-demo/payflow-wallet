@@ -114,7 +114,9 @@ stringData:
         email_configs:
           - to: 'oncall@payflow.com'
             from: 'alerts@payflow.com'
-            subject: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+            # v0.27+: top-level `subject` removed — use headers (amtool: field subject not found in type config.plain)
+            headers:
+              Subject: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
             html: |
               <h2>{{ .CommonAnnotations.summary }}</h2>
               <p>{{ .CommonAnnotations.description }}</p>

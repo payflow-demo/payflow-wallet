@@ -71,7 +71,7 @@ graph TB
 
 Production-like Kubernetes on your machine—the same shape as cloud, without AWS cost.
 
-From the repo root, run **`./scripts/deploy-microk8s.sh`**. It installs or uses MicroK8s, enables addons (registry, ingress, etc.), optionally builds and loads images, applies `k8s/overlays/local`, and prints access hints. Requires **Docker**; on macOS, **Multipass** too. Full guide: [`docs/microk8s-deployment.md`](docs/microk8s-deployment.md).
+From the repo root, run **`./scripts/deploy-microk8s.sh`**. It installs or uses MicroK8s, enables addons (registry, ingress, etc.), optionally builds and loads images, applies `k8s/overlays/local`, and prints access hints. Requires **Docker**. **macOS:** **Multipass** too. **Linux:** snap-based MicroK8s on the host (single-node; workers not auto-provisioned). **Windows:** use **WSL2** + Linux — native Windows shells are not supported by this script. Details: [`docs/microk8s-deployment.md`](docs/microk8s-deployment.md).
 
 **After deploy:** add hosts, validate, open the app:
 

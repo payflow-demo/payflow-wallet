@@ -1,6 +1,8 @@
 # ============================================
 # Prometheus Configuration for PayFlow
 # ============================================
+# NOTE: monitoring/deploy-monitoring.sh builds the live ConfigMap from
+# k8s/monitoring/prometheus.yml (not this file). Keep them aligned if you edit scrape jobs.
 # Purpose: Configure Prometheus to scrape metrics from all PayFlow services
 # Metrics Scraped: HTTP requests, business metrics, infrastructure health
 apiVersion: v1

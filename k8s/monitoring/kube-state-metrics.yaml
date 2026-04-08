@@ -116,22 +116,27 @@ spec:
       containers:
       - name: kube-state-metrics
         image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.10.0
+        imagePullPolicy: IfNotPresent
         ports:
         - name: http-metrics
           containerPort: 8080
         - name: telemetry
           containerPort: 8081
+        # Use main metrics port for both probes. Readiness on telemetry :8081 path /
+        # often stays failing (no handler or non-200), so the pod never becomes Ready.
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 5
+          initialDelaySeconds: 10
+          periodSeconds: 10
           timeoutSeconds: 5
         readinessProbe:
           httpGet:
-            path: /
-            port: 8081
-          initialDelaySeconds: 5
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
           timeoutSeconds: 5
         resources:
           requests:

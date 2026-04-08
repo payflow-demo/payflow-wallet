@@ -18,22 +18,20 @@ One script to run PayFlow on MicroK8s: **clone repo → run script**. It will:
 
 See [MicroK8s deployment guide](../docs/microk8s-deployment.md#quick-start-one-script-deploy).
 
----
-
-## add-microk8s-worker.sh
-
-Add a new MicroK8s worker node (Multipass VM) so the cluster has more CPU for pods. Use when you see **Insufficient cpu** and prefer scaling nodes instead of scaling down replicas.
-
-**Usage:**
+**Optional — add a worker later (macOS Multipass only):**
 
 ```bash
-./scripts/add-microk8s-worker.sh [VM_NAME] [CPUS] [MEMORY_MB]
-# Default: kubelab-worker-3, 2 CPU, 2048M
-./scripts/add-microk8s-worker.sh
-./scripts/add-microk8s-worker.sh kubelab-worker-4 2 2048
+./scripts/deploy-microk8s.sh add-worker [VM_NAME] [CPUS] [MEM_GB] [DISK_GB]
+# VM_NAME defaults to the next free payflow-worker-N (2 CPU, 4G RAM, 20G disk if omitted)
 ```
 
-**Requirements:** Multipass, MicroK8s (primary node running), `microk8s add-node` available. After the script finishes, run `kubectl get nodes` to confirm the new node is Ready.
+**Tear down workers + PayFlow namespace** (e.g. before a clean re-deploy):
+
+```bash
+./scripts/deploy-microk8s.sh remove-workers
+```
+
+---
 
 ## setup-hosts-payflow-local.sh
 

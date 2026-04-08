@@ -4,6 +4,14 @@
 
 > **Quick Start (beginners)**: Clone the repo, then run **one script**. It installs MicroK8s for you if needed (with enough CPU/RAM for all services), enables addons, and deploys the app. See [One-script deploy](#quick-start-one-script-deploy) below.
 
+### Platforms
+
+| OS | What the script does |
+|----|----------------------|
+| **macOS** | Multipass + MicroK8s VM; optional **0–3 worker VMs** (Multipass) joined automatically. |
+| **Linux** | MicroK8s on the host via **snap** (single-node). Extra workers are **not** auto-created — use `microk8s add-node` if you need more nodes. |
+| **Windows** | **Not** supported in Git Bash / PowerShell / CMD. Use **WSL2** (e.g. Ubuntu): the script sees **Linux**, so install Docker (WSL integration or `docker.io` in WSL) and **snap** MicroK8s inside WSL, then run the script from **bash in WSL**. |
+
 ---
 
 ## Quick Start: One-script deploy
@@ -81,9 +89,9 @@ For more detail, see sections below.
 ## Prerequisites
 
 ### Required Tools
-- Docker Desktop (or Docker Engine)
-- MicroK8s installed
-- kubectl configured
+- **Docker** Desktop or Engine (running). On **WSL2**, enable Docker Desktop’s **WSL integration** for your distro, or install Docker Engine inside WSL.
+- **MicroK8s** — the [one-script deploy](#quick-start-one-script-deploy) installs it on **macOS** (via Homebrew + VM) and **Linux/WSL2** (via snap) when missing; see [Platforms](#platforms) above.
+- **kubectl** — the script writes `~/.kube/microk8s-config` from `microk8s config`.
 
 ### Install MicroK8s
 
@@ -353,11 +361,11 @@ After nodes are Ready, pending pods should schedule.
 **Pods Pending with "Insufficient cpu" (need more nodes)**:
 ```bash
 # Add a new worker VM so the cluster has more capacity (instead of scaling down replicas):
-./scripts/add-microk8s-worker.sh [VM_NAME] [CPUS] [MEMORY_MB]
-# Example: add kubelab-worker-3 with 2 CPU and 2G RAM
-./scripts/add-microk8s-worker.sh kubelab-worker-3 2 2048
+./scripts/deploy-microk8s.sh add-worker [VM_NAME] [CPUS] [MEM_GB] [DISK_GB]
+# Example: add payflow-worker-4 with 2 CPU and 4G RAM (20G disk default)
+./scripts/deploy-microk8s.sh add-worker payflow-worker-4 2 4
 ```
-Then run `kubectl get nodes` and wait for the new node to be Ready; pending pods will schedule. See [scripts/README.md](../scripts/README.md#add-microk8s-workersh).
+Then run `kubectl get nodes` and wait for the new node to be Ready; pending pods will schedule. See [scripts/README.md](../scripts/README.md#deploy-microk8ssh-recommended-for-local--beginners).
 
 ### Login Issues
 
@@ -507,7 +515,7 @@ multipass exec kubelab-worker-3 -- sudo snap set microk8s disk.size=50G  # if us
 ```
 After free disk crosses the threshold, the kubelet removes the taint and the node is schedulable again. If the node is still critical, you can remove the taint manually (not recommended unless you've freed space): `kubectl taint nodes kubelab-worker-3 node.kubernetes.io/disk-pressure:NoSchedule-`
 
-**Fix (Insufficient cpu)**: Scale down old/crashing ReplicaSets to free CPU, or add a worker: `./scripts/add-microk8s-worker.sh`. To scale down old RS: `kubectl get rs -n payflow` then `kubectl scale rs -n payflow <name> --replicas=0` for the ones that are crashing or redundant.
+**Fix (Insufficient cpu)**: Scale down old/crashing ReplicaSets to free CPU, or add a worker: `./scripts/deploy-microk8s.sh add-worker`. To scale down old RS: `kubectl get rs -n payflow` then `kubectl scale rs -n payflow <name> --replicas=0` for the ones that are crashing or redundant.
 
 ### Issue: HPA Shows `<unknown>` Metrics
 

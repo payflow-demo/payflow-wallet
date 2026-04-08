@@ -12,6 +12,7 @@
       }
     ]
   },
+  "description": "Single PayFlow dashboard. PromQL targets match k8s/monitoring/prometheus.yml: api-gateway, auth/wallet/transaction/notification services, postgres-exporter, redis, rabbitmq, kube-state-metrics (kube_*), kube-dns (CoreDNS).",
   "editable": true,
   "gnetId": null,
   "graphTooltip": 1,
@@ -28,7 +29,7 @@
       },
       "id": 100,
       "panels": [],
-      "title": "🚨 CRITICAL BUSINESS METRICS - Real User Impact",
+      "title": "\ud83d\udea8 CRITICAL BUSINESS METRICS - Real User Impact",
       "type": "row"
     },
     {
@@ -68,7 +69,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -78,11 +81,11 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "pg_transactions_by_status_count{status=\"PENDING\"}",
+          "expr": "sum(pg_transactions_by_status_count{status=\"PENDING\"}) or sum(payflow_pending_transactions_total) or vector(0)",
           "refId": "A"
         }
       ],
-      "title": "⏳ Pending Transactions",
+      "title": "\u23f3 Pending Transactions",
       "type": "stat"
     },
     {
@@ -126,7 +129,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -136,7 +141,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "pg_pending_transaction_amount_total_amount",
+          "expr": "sum(pg_pending_transaction_amount_total_amount) or sum(payflow_pending_transaction_amount_total) or vector(0)",
           "refId": "A"
         }
       ],
@@ -184,7 +189,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -194,7 +201,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "pg_oldest_pending_transaction_age_seconds",
+          "expr": "max(pg_oldest_pending_transaction_age_seconds) or vector(0)",
           "refId": "A"
         }
       ],
@@ -242,7 +249,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -252,7 +261,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "100 * (sum(rate(pg_transactions_by_status_count{status=\"COMPLETED\"}[5m])) / sum(rate(pg_transactions_by_status_count[5m])))",
+          "expr": "(100 * (sum(increase(transactions_total{status=\"completed\",type=\"transfer\"}[6h])) or vector(0))) / clamp_min((sum(increase(transactions_total{type=\"transfer\",status=~\"completed|failed\"}[6h])) or vector(0)), 1)",
           "refId": "A"
         }
       ],
@@ -267,9 +276,136 @@
         "x": 0,
         "y": 7
       },
+      "id": 106,
+      "panels": [],
+      "title": "\ud83d\udcc8 Signups & transaction volume (database)",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "description": "Sourced from postgres-exporter custom queries (users / transactions tables). Reload exporter after changing queries.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 107,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {},
+        "textMode": "auto"
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "sum(pg_transactions_rowcount_n) or sum(pg_transactions_by_status_count) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Total transactions (DB)",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "description": "Sourced from postgres-exporter custom queries (users / transactions tables). Reload exporter after changing queries.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 108,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {},
+        "textMode": "auto"
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "sum(pg_users_total_n) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Registered users (signups)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
       "id": 101,
       "panels": [],
-      "title": "⚙️ CRONJOB HEALTH - Transaction Timeout Handler",
+      "title": "\u2699\ufe0f CRONJOB HEALTH - Transaction Timeout Handler",
       "type": "row"
     },
     {
@@ -314,7 +450,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 8
+        "y": 14
       },
       "id": 5,
       "options": {
@@ -323,7 +459,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -333,11 +471,11 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "time() - max(kube_job_status_completion_time{job_name=~\"transaction-timeout-handler.*\"})",
+          "expr": "time() - max(kube_job_status_completion_time{namespace=\"payflow\",job_name=~\"transaction-timeout-handler.*\"})",
           "refId": "A"
         }
       ],
-      "title": "⏱️ Last Successful Run",
+      "title": "\u23f1\ufe0f Last Successful Run",
       "type": "stat"
     },
     {
@@ -368,7 +506,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 8
+        "y": 14
       },
       "id": 6,
       "options": {
@@ -377,7 +515,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -387,7 +527,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "sum(kube_job_status_failed{job_name=~\"transaction-timeout-handler.*\"})",
+          "expr": "sum(kube_job_status_failed{namespace=\"payflow\",job_name=~\"transaction-timeout-handler.*\"})",
           "refId": "A"
         }
       ],
@@ -446,12 +586,15 @@
         "h": 8,
         "w": 16,
         "x": 8,
-        "y": 8
+        "y": 14
       },
       "id": 7,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -461,17 +604,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(kube_job_status_completion_time{job_name=~\"transaction-timeout-handler.*\"}[5m]) - rate(kube_job_status_start_time{job_name=~\"transaction-timeout-handler.*\"}[5m]))",
-          "legendFormat": "p95 Duration",
+          "expr": "kube_job_status_completion_time{namespace=\"payflow\",job_name=~\"transaction-timeout-handler.*\"} - kube_job_status_start_time{namespace=\"payflow\",job_name=~\"transaction-timeout-handler.*\"}",
+          "legendFormat": "{{job_name}}",
           "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.50, rate(kube_job_status_completion_time{job_name=~\"transaction-timeout-handler.*\"}[5m]) - rate(kube_job_status_start_time{job_name=~\"transaction-timeout-handler.*\"}[5m]))",
-          "legendFormat": "p50 Duration",
-          "refId": "B"
         }
       ],
-      "title": "CronJob Execution Duration",
+      "title": "CronJob run duration (last value per job)",
       "type": "timeseries"
     },
     {
@@ -526,7 +664,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 12
+        "y": 18
       },
       "id": 8,
       "options": {
@@ -541,12 +679,12 @@
       },
       "targets": [
         {
-          "expr": "sum(kube_job_status_succeeded{job_name=~\"transaction-timeout-handler.*\"})",
-          "legendFormat": "Reversals/sec",
+          "expr": "sum(kube_job_status_succeeded{namespace=\"payflow\",job_name=~\"transaction-timeout-handler.*\"})",
+          "legendFormat": "Succeeded job count (kube-state-metrics)",
           "refId": "A"
         }
       ],
-      "title": "Transactions Reversed by CronJob",
+      "title": "Timeout-handler jobs succeeded (gauge sum)",
       "type": "timeseries"
     },
     {
@@ -555,11 +693,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 22
       },
       "id": 102,
       "panels": [],
-      "title": "📊 TRANSACTION METRICS",
+      "title": "\ud83d\udcca TRANSACTION METRICS",
       "type": "row"
     },
     {
@@ -614,12 +752,14 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 17
+        "y": 23
       },
       "id": 9,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -629,18 +769,18 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(pg_transactions_by_status_count{status=\"COMPLETED\"}[5m]))",
+          "expr": "sum(rate(transactions_total{status=\"completed\",type=\"transfer\"}[2m]))",
           "legendFormat": "Completed",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(pg_transactions_by_status_count{status=\"FAILED\"}[5m]))",
+          "expr": "sum(rate(transactions_total{status=\"failed\",type=\"transfer\"}[2m]))",
           "legendFormat": "Failed",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(pg_transactions_by_status_count{status=\"PENDING\"}[5m]))",
-          "legendFormat": "⏳ Pending",
+          "expr": "sum(rate(transactions_total{status=\"pending\",type=\"transfer\"}[2m]))",
+          "legendFormat": "\u23f3 Pending (created)",
           "refId": "C"
         }
       ],
@@ -703,12 +843,15 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 17
+        "y": 23
       },
       "id": 10,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -718,13 +861,13 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(transaction_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum(rate(transaction_duration_seconds_bucket{status=\"completed\"}[5m])) by (le))",
+          "legendFormat": "p95 (completed)",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, rate(transaction_duration_seconds_bucket[5m]))",
-          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum(rate(transaction_duration_seconds_bucket{status=\"completed\"}[5m])) by (le))",
+          "legendFormat": "p50 (completed)",
           "refId": "B"
         }
       ],
@@ -737,11 +880,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 31
       },
       "id": 103,
       "panels": [],
-      "title": "🏗️ INFRASTRUCTURE HEALTH",
+      "title": "\ud83c\udfd7\ufe0f INFRASTRUCTURE HEALTH",
       "type": "row"
     },
     {
@@ -765,19 +908,26 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 26
+        "y": 32
       },
       "id": 11,
       "options": {
-        "displayLabels": ["name", "percent"],
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
           "displayMode": "table",
           "placement": "right",
-          "values": ["value"]
+          "values": [
+            "value"
+          ]
         },
         "pieType": "donut",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -829,13 +979,15 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 26
+        "y": 32
       },
       "id": 12,
       "options": {
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -916,12 +1068,14 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 26
+        "y": 32
       },
       "id": 13,
       "options": {
         "legend": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -946,7 +1100,7 @@
           "refId": "C"
         }
       ],
-      "title": "CoreDNS Response Rate",
+      "title": "CoreDNS response rate (job=kube-dns)",
       "type": "timeseries"
     },
     {
@@ -955,11 +1109,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 40
       },
       "id": 104,
       "panels": [],
-      "title": "🐰 RABBITMQ HEALTH",
+      "title": "\ud83d\udc30 RABBITMQ HEALTH",
       "type": "row"
     },
     {
@@ -1018,12 +1172,15 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 41
       },
       "id": 14,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -1074,7 +1231,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 41
       },
       "id": 15,
       "options": {
@@ -1083,7 +1240,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1107,11 +1266,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 49
       },
       "id": 105,
       "panels": [],
-      "title": "💾 DATABASE METRICS",
+      "title": "\ud83d\udcbe DATABASE METRICS",
       "type": "row"
     },
     {
@@ -1170,12 +1329,15 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 44
+        "y": 50
       },
       "id": 16,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -1185,18 +1347,18 @@
       },
       "targets": [
         {
-          "expr": "payflow_db_connection_pool_size{state=\"active\"}",
-          "legendFormat": "Active",
+          "expr": "sum by (job) (payflow_db_connection_pool_size{state=\"active\"})",
+          "legendFormat": "active {{job}}",
           "refId": "A"
         },
         {
-          "expr": "payflow_db_connection_pool_size{state=\"idle\"}",
-          "legendFormat": "Idle",
+          "expr": "sum by (job) (payflow_db_connection_pool_size{state=\"idle\"})",
+          "legendFormat": "idle {{job}}",
           "refId": "B"
         },
         {
-          "expr": "payflow_db_connection_pool_size{state=\"waiting\"}",
-          "legendFormat": "Waiting",
+          "expr": "sum by (job) (payflow_db_connection_pool_size{state=\"waiting\"})",
+          "legendFormat": "waiting {{job}}",
           "refId": "C"
         }
       ],
@@ -1255,12 +1417,15 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 44
+        "y": 50
       },
       "id": 17,
       "options": {
         "legend": {
-          "calcs": ["mean", "max"],
+          "calcs": [
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right"
         },
@@ -1270,12 +1435,12 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, rate(payflow_database_query_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum(rate(database_query_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, rate(payflow_database_query_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, sum(rate(database_query_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "B"
         }
@@ -1287,7 +1452,10 @@
   "refresh": "10s",
   "schemaVersion": 27,
   "style": "dark",
-  "tags": ["payflow", "production", "monitoring"],
+  "tags": [
+    "payflow",
+    "monitoring"
+  ],
   "templating": {
     "list": []
   },
@@ -1297,8 +1465,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "PayFlow Production Dashboard - Complete",
-  "uid": "payflow-prod-complete",
+  "title": "PayFlow overview",
+  "uid": "payflow",
   "version": 1
 }
-

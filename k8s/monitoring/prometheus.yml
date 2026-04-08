@@ -83,7 +83,7 @@ scrape_configs:
   # #### Jobs, CronJobs, Pods, ResourceQuotas, etc. ####
   - job_name: 'kube-state-metrics'
     static_configs:
-    - targets: ['kube-state-metrics.kube-system:8080']
+    - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
     metric_relabel_configs:
     # Keep only PayFlow namespace metrics to reduce cardinality
     - source_labels: [namespace]
@@ -97,8 +97,8 @@ scrape_configs:
   # #### PostgreSQL Exporter ####
   # #### Detailed database metrics: connections, queries, locks ####
   - job_name: 'postgres-exporter'
-    scrape_interval: 30s  # Longer interval for database queries
-    scrape_timeout: 25s   # Timeout must be < interval (30s), so 25s max
+    scrape_interval: 45s  # Exporter can be slow on small nodes; keep > scrape_timeout
+    scrape_timeout: 40s
     static_configs:
     - targets: ['postgres-exporter.payflow.svc.cluster.local:9187']
     relabel_configs:
