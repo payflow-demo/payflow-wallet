@@ -604,8 +604,8 @@ app.post('/auth/change-password',
   }
 );
 
-const server = app.listen(PORT, () => {
-  console.log(`Auth service running on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Auth service listening on 0.0.0.0:${PORT}`);
 });
 
 // Graceful shutdown (12-factor: disposability)

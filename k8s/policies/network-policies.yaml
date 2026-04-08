@@ -426,6 +426,15 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
+  # kube-dns Service ClusterIP: namespaceSelector may not match pre-DNAT (see base policy).
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
   # Allow connections to PostgreSQL
   - to:
     - podSelector:

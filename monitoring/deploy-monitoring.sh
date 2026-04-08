@@ -4,6 +4,14 @@
 # PayFlow Monitoring Stack Deployment Script
 # ============================================
 # This script upgrades monitoring from 60% → 100%
+#
+# Run (either is fine — the script cds to repo root):
+#   ./monitoring/deploy-monitoring.sh
+#   cd monitoring && bash deploy-monitoring.sh
+#
+# Manual kubectl apply paths are relative to REPO ROOT, not this folder:
+#   kubectl apply -f k8s/monitoring/kube-state-metrics.yaml
+# From inside monitoring/: use ../k8s/monitoring/kube-state-metrics.yaml
 
 set -e  # Exit on error
 
@@ -82,9 +90,53 @@ apply_with_storage() {
 kubectl create namespace monitoring 2>/dev/null || true
 [ -f k8s/monitoring/namespace.yaml ] && kubectl apply -f k8s/monitoring/namespace.yaml 2>/dev/null || true
 [ -f k8s/monitoring/prometheus-rbac.yaml ] && kubectl apply -f k8s/monitoring/prometheus-rbac.yaml
+
+# Prometheus Deployment mounts prometheus-config + prometheus-rules; they MUST exist before pods start.
+# (Previously these were only created in step 5 → pods stuck NotReady / mount errors → verify showed "not running".)
+if [ -f k8s/monitoring/prometheus.yml ] && [ -f k8s/monitoring/alerts.yml ]; then
+  kubectl create configmap prometheus-config -n monitoring \
+    --from-file=prometheus.yml=k8s/monitoring/prometheus.yml \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl create configmap prometheus-rules -n monitoring \
+    --from-file=alerts.yml=k8s/monitoring/alerts.yml \
+    --dry-run=client -o yaml | kubectl apply -f -
+fi
+
 [ -f k8s/monitoring/prometheus-deployment.yaml ] && apply_with_storage k8s/monitoring/prometheus-deployment.yaml
 [ -f k8s/monitoring/loki-deployment.yaml ] && apply_with_storage k8s/monitoring/loki-deployment.yaml
+# Grafana mounts dashboard JSON from ConfigMap grafana-dashboards-json (file provider in grafana-dashboard-provider CM).
+# Single dashboard: queries align with k8s/monitoring/prometheus.yml scrape jobs.
+# When only this ConfigMap changes, Grafana often keeps serving stale JSON until the pod restarts.
+RESTART_GRAFANA_DASHBOARDS=0
+OLD_DASH_CM_RV=$(kubectl get configmap grafana-dashboards-json -n monitoring -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null || true)
+if [ -f k8s/monitoring/grafana-dashboards/payflow-complete-dashboard.json ]; then
+  kubectl create configmap grafana-dashboards-json -n monitoring \
+    --from-file=payflow-dashboard.json=k8s/monitoring/grafana-dashboards/payflow-complete-dashboard.json \
+    --dry-run=client -o yaml | kubectl apply -f -
+  NEW_DASH_CM_RV=$(kubectl get configmap grafana-dashboards-json -n monitoring -o jsonpath='{.metadata.resourceVersion}')
+  if [ "$OLD_DASH_CM_RV" != "$NEW_DASH_CM_RV" ]; then
+    RESTART_GRAFANA_DASHBOARDS=1
+  fi
+fi
 [ -f k8s/monitoring/grafana-deployment.yaml ] && apply_with_storage k8s/monitoring/grafana-deployment.yaml
+if [ "$RESTART_GRAFANA_DASHBOARDS" = 1 ] && kubectl get deploy grafana -n monitoring &>/dev/null; then
+  echo -e "${YELLOW}Restarting Grafana so provisioned dashboards pick up the latest ConfigMap...${NC}"
+  kubectl rollout restart deployment/grafana -n monitoring
+fi
+
+echo -e "${GREEN}Waiting for core monitoring rollouts (Prometheus / Loki / Grafana)...${NC}"
+if [ -f k8s/monitoring/prometheus-deployment.yaml ]; then
+  kubectl rollout status deployment/prometheus -n monitoring --timeout=300s \
+    || { echo -e "${RED}Prometheus rollout failed.${NC}"; kubectl get pods -n monitoring -l app=prometheus; exit 1; }
+fi
+if [ -f k8s/monitoring/loki-deployment.yaml ]; then
+  kubectl rollout status statefulset/loki -n monitoring --timeout=300s \
+    || { echo -e "${RED}Loki rollout failed.${NC}"; kubectl get pods -n monitoring -l app=loki; exit 1; }
+fi
+if [ -f k8s/monitoring/grafana-deployment.yaml ]; then
+  kubectl rollout status deployment/grafana -n monitoring --timeout=300s \
+    || { echo -e "${RED}Grafana rollout failed.${NC}"; kubectl get pods -n monitoring -l app=grafana; exit 1; }
+fi
 
 # ============================================
 # Step 2: Deploy Kube State Metrics
@@ -93,11 +145,15 @@ echo -e "\n${YELLOW}[2/9] Deploying kube-state-metrics...${NC}"
 
 kubectl apply -f k8s/monitoring/kube-state-metrics.yaml
 
-echo -e "${GREEN}Waiting for kube-state-metrics to be ready...${NC}"
-kubectl wait --for=condition=ready pod \
-  -l app=kube-state-metrics \
-  -n kube-system \
-  --timeout=120s
+# Do NOT use `kubectl wait pod -l app=...` here: during a rollout several pods match
+# the label (terminating + new); wait tries to satisfy all and times out. Use rollout.
+echo -e "${GREEN}Waiting for kube-state-metrics rollout (kube-system, up to 5m)...${NC}"
+if ! kubectl rollout status deployment/kube-state-metrics -n kube-system --timeout=300s; then
+  echo -e "${RED}kube-state-metrics rollout did not finish.${NC}"
+  echo -e "${YELLOW}kubectl get pods -n kube-system -l app=kube-state-metrics -o wide${NC}"
+  echo -e "${YELLOW}kubectl describe pod -n kube-system -l app=kube-state-metrics${NC}"
+  exit 1
+fi
 
 echo -e "${GREEN}✓ kube-state-metrics deployed${NC}"
 
@@ -106,13 +162,25 @@ echo -e "${GREEN}✓ kube-state-metrics deployed${NC}"
 # ============================================
 echo -e "\n${YELLOW}[3/9] Deploying postgres-exporter...${NC}"
 
+# Local overlay capped payflow at services=10; app + infra fills that. Exporters add 2 Services.
+# Patch live quota so apply succeeds; k8s YAML was also raised for new clusters.
+if kubectl get resourcequota payflow-resource-quota -n payflow &>/dev/null; then
+  kubectl patch resourcequota payflow-resource-quota -n payflow --type=merge \
+    -p '{"spec":{"hard":{"services":"20"}}}' &>/dev/null \
+    && echo -e "${GREEN}✓ payflow ResourceQuota services ≥ 20 (for exporters)${NC}" \
+    || echo -e "${YELLOW}⚠ Could not patch payflow-resource-quota (missing RBAC?); apply k8s/overlays/local if Service quota errors persist.${NC}"
+fi
+
 kubectl apply -f k8s/monitoring/postgres-exporter.yaml
 
-echo -e "${GREEN}Waiting for postgres-exporter to be ready...${NC}"
-kubectl wait --for=condition=ready pod \
-  -l app=postgres-exporter \
-  -n payflow \
-  --timeout=120s
+# Avoid `kubectl wait pod -l ...` immediately after apply: the Pod may not exist yet
+# (brief window) → "no matching resources found". Rollout waits on the Deployment.
+echo -e "${GREEN}Waiting for postgres-exporter rollout (payflow, up to 3m)...${NC}"
+if ! kubectl rollout status deployment/postgres-exporter -n payflow --timeout=180s; then
+  echo -e "${RED}postgres-exporter rollout failed.${NC}"
+  echo -e "${YELLOW}kubectl get pods -n payflow -l app=postgres-exporter; kubectl describe deploy postgres-exporter -n payflow${NC}"
+  exit 1
+fi
 
 echo -e "${GREEN}✓ postgres-exporter deployed${NC}"
 
@@ -123,11 +191,12 @@ echo -e "\n${YELLOW}[3b/9] Deploying redis-exporter...${NC}"
 
 kubectl apply -f k8s/monitoring/redis-exporter.yaml
 
-echo -e "${GREEN}Waiting for redis-exporter to be ready...${NC}"
-kubectl wait --for=condition=ready pod \
-  -l app=redis-exporter \
-  -n payflow \
-  --timeout=120s
+echo -e "${GREEN}Waiting for redis-exporter rollout (payflow, up to 3m)...${NC}"
+if ! kubectl rollout status deployment/redis-exporter -n payflow --timeout=180s; then
+  echo -e "${RED}redis-exporter rollout failed.${NC}"
+  echo -e "${YELLOW}kubectl get pods -n payflow -l app=redis-exporter; kubectl describe deploy redis-exporter -n payflow${NC}"
+  exit 1
+fi
 
 echo -e "${GREEN}✓ redis-exporter deployed${NC}"
 
@@ -177,6 +246,12 @@ kubectl apply -f k8s/monitoring/promtail-daemonset.yaml
 # For EKS with Secrets Manager, optionally apply:
 # kubectl apply -f k8s/monitoring/alertmanager-external-secret.yaml
 
+echo -e "${GREEN}Waiting for Alertmanager and Promtail rollouts...${NC}"
+kubectl rollout status deployment/alertmanager -n monitoring --timeout=180s \
+  || { echo -e "${RED}Alertmanager rollout failed.${NC}"; kubectl get pods -n monitoring -l app=alertmanager; exit 1; }
+kubectl rollout status daemonset/promtail -n monitoring --timeout=300s \
+  || { echo -e "${RED}Promtail DaemonSet rollout failed.${NC}"; kubectl get pods -n monitoring -l app=promtail; exit 1; }
+
 # Reload AlertManager (Deployment pod name varies)
 echo -e "${GREEN}Reloading AlertManager...${NC}"
 AM_POD=$(kubectl get pod -n monitoring -l app=alertmanager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
@@ -210,26 +285,19 @@ else
     echo -e "${RED}✗ redis-exporter not running${NC}"
 fi
 
-# Check Prometheus
-if kubectl get pod -n monitoring -l app=prometheus | grep Running &> /dev/null; then
-    echo -e "${GREEN}✓ Prometheus running${NC}"
-else
-    echo -e "${RED}✗ Prometheus not running${NC}"
-fi
-
-# Check AlertManager
-if kubectl get pod -n monitoring -l app=alertmanager | grep Running &> /dev/null; then
-    echo -e "${GREEN}✓ AlertManager running${NC}"
-else
-    echo -e "${RED}✗ AlertManager not running${NC}"
-fi
-
-# Check Promtail
-if kubectl get pod -n monitoring -l app=promtail | grep Running &> /dev/null; then
-    echo -e "${GREEN}✓ Promtail running${NC}"
-else
-    echo -e "${RED}✗ Promtail not running${NC}"
-fi
+# Use Ready condition (not plain-text grep — avoids false ✗ during ContainerCreating, etc.)
+check_monitoring_ready() {
+  local label="$1" name="$2"
+  if kubectl wait --for=condition=ready pod -l "$label" -n monitoring --timeout=120s &>/dev/null; then
+    echo -e "${GREEN}✓ ${name} Ready${NC}"
+  else
+    echo -e "${RED}✗ ${name} not Ready${NC}"
+    kubectl get pods -n monitoring -l "$label" -o wide 2>/dev/null || true
+  fi
+}
+check_monitoring_ready "app=prometheus" "Prometheus"
+check_monitoring_ready "app=alertmanager" "Alertmanager"
+check_monitoring_ready "app=promtail" "Promtail"
 
 # ============================================
 # Step 8: Display Access Information
@@ -257,10 +325,9 @@ echo -e "\n${GREEN}================================================${NC}"
 echo -e "${GREEN}Next Steps${NC}"
 echo -e "${GREEN}================================================${NC}"
 
-echo -e "\n1. ${YELLOW}Import Grafana Dashboard:${NC}"
-echo -e "   - Open Grafana (see above)"
-echo -e "   - Go to: + → Import Dashboard"
-echo -e "   - Upload: k8s/monitoring/grafana-dashboards/payflow-complete-dashboard.json"
+echo -e "\n1. ${YELLOW}Grafana dashboards:${NC}"
+echo -e "   - PayFlow dashboards are provisioned automatically (folder: PayFlow)."
+echo -e "   - Re-run this script after editing JSON under k8s/monitoring/grafana-dashboards/"
 
 echo -e "\n2. ${YELLOW}Configure Slack/PagerDuty (Production):${NC}"
 echo -e "   - Edit: k8s/monitoring/alertmanager-deployment.yaml (Secret stringData)"

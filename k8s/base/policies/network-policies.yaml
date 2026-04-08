@@ -437,6 +437,16 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
+  # kube-dns is reached via Service ClusterIP; some CNIs enforce policy before DNAT, so the
+  # namespaceSelector above does not match and DNS times out. Port 53 only.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
   # Allow connections to PostgreSQL (podSelector for in-cluster postgres, ipBlock for RDS on EKS)
   - to:
     - podSelector:

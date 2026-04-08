@@ -22,12 +22,13 @@ data:
             usage: "GAUGE"
             description: "Number of transactions by status"
     
+    # Must always return exactly one row or the exporter emits no metric (Grafana shows "No data").
     pg_oldest_pending_transaction:
-      query: "SELECT EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) as age_seconds FROM transactions WHERE status = 'PENDING'"
+      query: "SELECT COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MIN(created_at) FROM transactions WHERE status = 'PENDING'))), 0)::float AS age_seconds"
       metrics:
         - age_seconds:
             usage: "GAUGE"
-            description: "Age of oldest pending transaction in seconds"
+            description: "Age of oldest pending transaction in seconds (0 if none)"
     
     pg_pending_transaction_amount:
       query: "SELECT COALESCE(SUM(amount), 0) as total_amount FROM transactions WHERE status = 'PENDING'"
@@ -35,17 +36,24 @@ data:
         - total_amount:
             usage: "GAUGE"
             description: "Total amount stuck in pending transactions"
+
+    pg_users_total:
+      query: "SELECT COUNT(*)::float AS n FROM users"
+      metrics:
+        - n:
+            usage: "GAUGE"
+            description: "Registered users (signups) in database"
+
+    # Total row count (empty table still returns one row — unlike GROUP BY status).
+    pg_transactions_rowcount:
+      query: "SELECT COUNT(*)::float AS n FROM transactions"
+      metrics:
+        - n:
+            usage: "GAUGE"
+            description: "Total transactions in database"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: postgres-exporter-secret
-  namespace: payflow
-type: Opaque
-stringData:
-  # Use FQDN for reliable DNS resolution (same issue as CronJob had)
-  DATA_SOURCE_NAME: "postgresql://payflow:payflowpass@postgres.payflow.svc.cluster.local:5432/payflow?sslmode=disable"
----
+# DSN: use db-secrets (same as app services) so local payflow123 / EKS ESO stay in sync.
+# A mismatched password here caused scrapes to hang until Prometheus hit scrape_timeout.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,13 +78,26 @@ spec:
         - containerPort: 9187
           name: metrics
         env:
-        - name: DATA_SOURCE_NAME
+        - name: DATA_SOURCE_URI
+          value: "postgres.payflow.svc.cluster.local:5432/payflow?sslmode=disable"
+        - name: DATA_SOURCE_USER
           valueFrom:
             secretKeyRef:
-              name: postgres-exporter-secret
-              key: DATA_SOURCE_NAME
+              name: db-secrets
+              key: DB_USER
+        - name: DATA_SOURCE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_PASSWORD
         - name: PG_EXPORTER_EXTEND_QUERY_PATH
           value: "/etc/postgres-exporter/queries.yaml"
+        # Default collectors run hundreds of queries per scrape — often exceed Prometheus
+        # scrape_timeout (25s) on small clusters; custom queries alone are enough for PayFlow dashboards.
+        - name: PG_EXPORTER_DISABLE_DEFAULT_METRICS
+          value: "true"
+        - name: PG_EXPORTER_DISABLE_SETTINGS_METRICS
+          value: "true"
         volumeMounts:
         - name: queries
           mountPath: /etc/postgres-exporter

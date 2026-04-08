@@ -12,7 +12,8 @@ spec:
     limits.cpu: "20"
     limits.memory: "32Gi"
     pods: "60"
-    services: "10"
+    # Base app ~9 + postgres-exporter + redis-exporter + headroom
+    services: "20"
     persistentvolumeclaims: "5"
     secrets: "20"
     configmaps: "15"
