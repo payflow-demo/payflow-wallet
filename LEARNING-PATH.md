@@ -4,6 +4,8 @@
 
 **Navigation:** **[`docs/README.md`](docs/README.md)** — one map for deploy docs (so you never open five “how to deploy” guides at once).
 
+> **Note on `docs/` links:** The `docs/` folder ships inside the cloned repo and every link below works locally. The folder is intentionally not rendered on GitHub — clone first, then open files in your editor or terminal.
+
 ---
 
 ## The journey (what “done” looks like)
@@ -330,3 +332,21 @@ Then deploy with `k8s/overlays/aks` and vars as in README short form. Read [`doc
 | **AWS first time** | [`docs/INFRASTRUCTURE-ONBOARDING.md`](docs/INFRASTRUCTURE-ONBOARDING.md) → [`docs/DEPLOYMENT-ORDER.md`](docs/DEPLOYMENT-ORDER.md) → `./spinup.sh` → README EKS “After infrastructure” |
 | **App / rollback commands** | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 | **Expose home lab (HTTPS)** | [`docs/cloudflare-setup.md`](docs/cloudflare-setup.md) |
+
+---
+
+## You are done when you can do all of this
+
+| Can you… | Where you proved it |
+|---|---|
+| Run PayFlow on Kubernetes and validate it is healthy | Week 1 — `./scripts/validate.sh` passes |
+| Explain what happens to money between debit and credit | Week 1 — `docs/system-flow.md` checkpoint |
+| Kill a pod and explain why traffic keeps flowing | Week 2 — deliberate failure drills |
+| Read a NetworkPolicy and describe what it blocks | Week 2 — `k8s/base/policies/network-policies.yaml` |
+| Trace a request end-to-end using correlation IDs | Week 3 — minimal triad |
+| Explain idempotency keys and when they fire | Week 3 — `services/transaction-service` code |
+| Provision EKS with Terraform in the correct module order | Week 4 — `./spinup.sh` or manual apply |
+| Describe the full CI/CD path from `git push` to running pod | Week 4 — `.github/workflows/build-and-deploy.yml` |
+| Say why `Running 1/1` does not mean the service is healthy | Week 4 — CronJob + `payflow_pending_transactions_total` |
+
+If you can answer every row without looking it up, you have completed PayFlow.
