@@ -168,3 +168,10 @@ docker-push*.log
 # Archives produced during image transfer / backup (can be huge)
 *.image.tar
 payflow-*.tar
+
+# Documentation folder
+/docs
+
+# Personal writing and interview prep
+/article4.md
+/INTERVIEW-PREP.md
