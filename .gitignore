@@ -175,3 +175,7 @@ payflow-*.tar
 # Personal writing and interview prep
 /article4.md
 /INTERVIEW-PREP.md
+
+
+#Ignore cursor AI rules
+.cursor/rules/codacy.mdc
