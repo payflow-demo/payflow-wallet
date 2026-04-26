@@ -1,4 +1,4 @@
-# What spinup.sh Does (Plain English) and Issues We Fixed
+# What spinup.sh Does and Issues We Fixed
 
 ## What spinup.sh does and how it works
 

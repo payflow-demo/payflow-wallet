@@ -9,6 +9,7 @@ PayFlow Wallet is a complete payment platform demonstrating real-world microserv
 > **New here? → [`LEARNING-PATH.md`](LEARNING-PATH.md)**
 > Week-by-week curriculum: run the app → break it → understand the architecture → deploy to cloud.
 > Start there. Everything else in this README is reference material.
+> **Overwhelmed?** Open that file and read **“If you feel lost or overloaded”** at the top—three links, one focus.
 
 **Deep dive (design choices, fintech mindset, end-to-end traces):** [*Building PayFlow* — a developer’s field guide](https://osomudeya.gumroad.com/l/payflow) walks through why the system is built the way it is (atomicity, idempotency, queues vs HTTP, Terraform/Kubernetes, security, observability, CI/CD). It complements this repo’s markdown docs; when something disagrees, **the repo and running code are the source of truth**.
 

@@ -6,6 +6,10 @@
 
 > **Note on `docs/` links:** The `docs/` folder ships inside the cloned repo and every link below works locally. The folder is intentionally not rendered on GitHub — clone first, then open files in your editor or terminal.
 
+### If you feel lost or overloaded
+
+You are not behind. This project is **big on purpose**; the docs exist so you only open **one** door at a time. **Do this:** stay on this file for **Week 1** from top to bottom—do not hunt through every folder. If something breaks, use [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md). If you are not sure *which* deploy doc to trust, use [`docs/README.md`](docs/README.md) (it names the single canonical path). Close every other tab. One week, one goal.
+
 ---
 
 ## The journey (what “done” looks like)
@@ -36,6 +40,8 @@
 **Goal:** The app runs on **Kubernetes on your machine**. You can explain what happens when someone sends money and how each service fits in.
 
 **Prerequisites:** **Docker** running; on macOS, **Multipass** (MicroK8s runs in a VM). Full detail: [`docs/microk8s-deployment.md`](docs/microk8s-deployment.md).
+
+**Do not open yet (Week 1):** `terraform/` or `./spinup.sh` or deep AWS/EKS/AKS guides; reading every file under `.github/workflows/`; treating all of `k8s/` as homework before this week’s deploy works. Stay in this week’s ordered steps—curiosity is fine; **parallel** rabbit-holes are what overwhelm.
 
 ### Day 1–2: Deploy with MicroK8s and validate
 
@@ -69,6 +75,8 @@ Open **http://www.payflow.local** → register two users → send money between 
 - Which **tables** does a transfer touch? *(wallets, transactions, notifications)*  
 - Which **queues**? *(transactions → notifications)*  
 - Which **services** in order? *(api-gateway → transaction-service → wallet-service → notification-service)*  
+
+**Your story (one line, private notes):** In one sentence, how does money move from click to settled state—and name **one** boundary (HTTP vs queue vs DB) you could defend in an interview?
 
 **Stuck?** [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) (MicroK8s) + [`docs/microk8s-deployment.md`](docs/microk8s-deployment.md) troubleshooting.
 
@@ -110,17 +118,23 @@ For each folder: read **`README.md`**, then **`server.js`** (or main entry).
 - **Circuit breaker** (transaction-service): *stops calling a failing dependency so it can recover*  
 - **`FOR UPDATE`** (wallet-service): *row lock so two transfers cannot corrupt balance reads*  
 
+**Your story (one line):** What failure does the **circuit breaker** prevent vs what **`FOR UPDATE`** prevents—and what would break if you removed each?
+
 ---
 
 ### Day 5: Why this stack exists
 
 Read [`docs/technology-choices.md`](docs/technology-choices.md) — PostgreSQL vs document DB, RabbitMQ vs synchronous HTTP, Redis for sessions, etc. This is senior-interview vocabulary.
 
+**Your story (one line):** Pick **one** tradeoff from that doc (e.g. SQL vs document, sync vs async). One sentence: what you gain, what you give up, when you would flip the choice.
+
 ---
 
 ## Week 2 — Kubernetes depth (you are already on the cluster)
 
 **Goal:** Name what Kubernetes adds vs Compose; break things safely; optionally wire **GitOps** locally.
+
+**Do not open yet (Week 2):** Full cloud Terraform or `./spinup.sh` against real AWS until **Week 4** in this file; applying raw `k8s/base` without an overlay before you understand overlays; deep FinOps or multi-account patterns unless that is your only goal.
 
 ### Day 1: Traffic and manifests
 
@@ -131,6 +145,8 @@ Read in order:
 
 **Checkpoint:** Why `kubectl apply -k k8s/overlays/local` and **not** `k8s/base` alone?  
 *Base = shared YAML for every environment. Local overlay adds dev secrets, quotas, `localhost:32000` images, probes, ingress. Always apply an **overlay**, not raw base.*
+
+**Your story (one line):** Why is “apply an overlay” the safe default in this repo?
 
 ---
 
@@ -165,6 +181,8 @@ kubectl rollout undo deployment/api-gateway -n payflow
 
 **Checkpoint:** You can explain **Deployment + Service + Ingress** and why all three matter.
 
+**Your story (three short lines):** If you deleted **only** Ingress vs **only** Service vs **only** one Pod (Deployment still there)—what breaks in each case?
+
 ---
 
 ### Day 5 (optional): Local GitOps capstone
@@ -176,6 +194,8 @@ End-to-end **push → build → registry → manifest bump → Argo CD sync** (n
 ## Week 3 — Architecture at interview depth
 
 **Goal:** Whiteboard this system in ~30 minutes.
+
+**Do not open yet (Week 3):** Shipping new product features in application code—you are synthesizing and explaining, not expanding scope. Reading **every** architecture doc in parallel; pick **one** table row until its idea feels true, then move on.
 
 ### Deep dives (pick order by interest)
 
@@ -196,6 +216,8 @@ End-to-end **push → build → registry → manifest bump → Argo CD sync** (n
 
 **Checkpoint:** Could you draw data flow and justify each boundary?
 
+**Your story (~30 seconds):** Without the doc open, talk aloud from browser to notification—then note **one** place you would add idempotency or backoff at 10× traffic.
+
 ---
 
 ## Prod-driven lab: minimal triad (no extra platform)
@@ -203,6 +225,8 @@ End-to-end **push → build → registry → manifest bump → Argo CD sync** (n
 Three habits that separate “it runs” from “I can operate it”: **measurable**, **recoverable**, **honest about consistency**.
 
 Works on **MicroK8s** or **Compose**. **Easiest metrics path:** `docker compose --profile monitoring up -d` (Grafana/Prometheus in README) even if your day-to-day app is on K8s—or follow [`docs/monitoring.md`](docs/monitoring.md) for cluster-side metrics when you are ready.
+
+**Do not open yet (minimal triad):** A third observability vendor or “full SRE program”—keep to **metrics + logs + one DB sanity check** only.
 
 ### 1. SLO-style thresholds + deliberate breakage
 
@@ -222,11 +246,15 @@ Same idempotency key twice → one ledger effect ([`services/transaction-service
 
 **Checkpoint:** You can show **metrics + logs + DB** for one happy path and one failure.
 
+**Your story (three bullets):** Which metric or graph moved first when you broke something; which log line showed cause vs symptom; which DB check restored confidence in correctness?
+
 ---
 
 ## Week 4 — Cloud (EKS / AKS), Terraform, CI/CD
 
 **Goal:** Same app on **real** infra: Terraform in the **correct module order**, images in a cloud registry, rollout via `deploy.sh`, and you understand **GitHub Actions**.
+
+**Do not open yet (Week 4):** `terraform apply` in a random module without [`docs/README.md`](docs/README.md) order; a `prod` workspace until `dev` (or equivalent) feels boring and repeatable.
 
 ### Before you type commands
 
@@ -287,6 +315,8 @@ Then deploy with `k8s/overlays/aks` and vars as in README short form. Read [`doc
 - **Index:** [`docs/README.md`](docs/README.md) → CI/CD section.
 
 **Checkpoint:** You can describe **edit → image → registry → manifest / deploy → running pods** for one change.
+
+**Your story (one line):** From `git push` to running pod, name **three** hops you could whiteboard without the file open.
 
 ---
 
@@ -350,3 +380,5 @@ Then deploy with `k8s/overlays/aks` and vars as in README short form. Read [`doc
 | Say why `Running 1/1` does not mean the service is healthy | Week 4 — CronJob + `payflow_pending_transactions_total` |
 
 If you can answer every row without looking it up, you have completed PayFlow.
+
+**Your story (resume prep):** Pick **two** rows you could not do before PayFlow. For each, write **one** honest resume-style line (“Shipped…”, “Automated…”, “Debugged…”) you can say out loud in an interview.
